@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Release workflow stages the studbook package:** a version tag now checks and stages `@extantape/onepedigree-studbook` with core, react and payload, so the four packages release in lockstep. `RELEASING.md` lists it. The studbook contract also says how a host's housing moves map to events: a move to another holder is a `transfer`, and moves under one holder are left out. Tested: the full test suite, typecheck, build, a local `pnpm pack` of the studbook package, and the leak check. Not tested: the Release workflow itself, which runs only on a tag, and npm trusted publishing for the studbook package, which must be set before the next tag.
+
 - Five-tool OneOrigin palette, 2026-11-15 (D206, K656). The brand copy is relocked at OnePhylogeny 37453b0, which adds OneFamily as the fifth tool color and keeps every text color at 4.5:1 or better on white. Tested: the OneOrigin check and the full test suite. Not tested: the app screens by eye.
 
 - **New Mac app identifier:** the desktop app's identifier is now `com.extantape.onepedigree`. macOS treats it as a new app, so the first launch after updating starts with default settings and asks again for any permissions it needs. This happens once. Your files are untouched. The shared OneOrigin guidelines now say every tool's identifier is `com.extantape.<tool>`.
