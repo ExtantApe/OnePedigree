@@ -32,6 +32,7 @@ A foster dam, surrogate or any other non-genetic parent is a link with a `kind` 
   - the date;
   - `location` and `owner` as **opaque holder codes**, never names;
   - `localId`, `cause`, `notes`, and `sourceId` for traceability.
+  - **Housing moves:** a host that tracks where animals are housed maps only moves that happened, dated by when the animal moved. A move to another holder is a `transfer`, with `location` and `owner` set to the new holder's codes. A move between enclosures or groups under the same holder is left out of the studbook and of PMx, because a studbook location is the holder.
 - **`CensusYear`:** yearly counts by sex and origin.
 
 ## Plugin options
