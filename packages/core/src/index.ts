@@ -36,6 +36,7 @@ export {
   type PedigreeRepository,
 } from './repository'
 export { parsePedigree, SCHEMA_VERSION, serializePedigree } from './serialize'
+export { CORE_VERSION } from './version'
 export {
   DEFAULT_LINEAGE_ROLES,
   PEDIGREE_VIEWS,

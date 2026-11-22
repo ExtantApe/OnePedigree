@@ -69,6 +69,10 @@ groups an hourglass projection's relatives by generation (parents, grandparents,
 offspring, …); `generationKind()` gives hosts the kind and number of "great"s to translate, and
 `generationLabel()` an English label.
 
+`CORE_VERSION` is this package's version as a string. A host can store
+`onepedigree-core@${CORE_VERSION}` next to a computed result to record which version of the
+arithmetic produced it. `SCHEMA_VERSION` is the document format's version.
+
 ## Genetics
 
 Optional and separate from the pedigree document (schema 1 is unchanged): the host

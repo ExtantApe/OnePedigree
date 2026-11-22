@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Core exports `CORE_VERSION`:** the core package's version as a string, so a host can record which version of the arithmetic produced a result (for example `onepedigree-core@0.1.0-alpha.22` as the method version of a call from `carrierFromOffspring`) without reading `package.json`. It lives in `packages/core/src/version.ts`, is bumped with the other versions at each release (`RELEASING.md` says so), and a test fails if it differs from `package.json` or from the other three packages. Asked for by Captive Origins (K618, D5197). Tested: new Vitest tests for the constant, the full test suite, typecheck, build and the leak check. Not tested: a published install of the package, and a release bump, which has not been run with the new step.
+
 - **Release workflow stages the studbook package:** a version tag now checks and stages `@extantape/onepedigree-studbook` with core, react and payload, so the four packages release in lockstep. `RELEASING.md` lists it. The studbook contract also says how a host's housing moves map to events: a move to another holder is a `transfer`, and moves under one holder are left out. Tested: the full test suite, typecheck, build, a local `pnpm pack` of the studbook package, and the leak check. Not tested: the Release workflow itself, which runs only on a tag, and npm trusted publishing for the studbook package, which must be set before the next tag.
 
 - Five-tool OneOrigin palette, 2026-11-15 (D206, K656). The brand copy is relocked at OnePhylogeny 37453b0, which adds OneFamily as the fifth tool color and keeps every text color at 4.5:1 or better on white. Tested: the OneOrigin check and the full test suite. Not tested: the app screens by eye.
