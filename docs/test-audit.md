@@ -2,6 +2,12 @@
 
 Each audit lists what this repo promises, the tests that prove it, and the gaps: those closed in the same pass and those left, with why. Audits run after each feature or fix, and at least every 14 days while the repo has commits. Newest first.
 
+## 2026-11-22: CORE_VERSION and the new app identifier
+
+- Promises: the core exports `CORE_VERSION`, equal to its package version, so a host can record which method version made a result; the Mac app's identifier is `com.extantape.onepedigree`, and the changelog says plainly that settings and permissions reset once while files are untouched.
+- Covered: `packages/core/test/version.test.ts` keeps `CORE_VERSION` equal to `package.json`.
+- Gaps skipped (and why): the identifier is one line of config with no logic. A search of the app found no data stored under the identifier, so nothing can be stranded; the reset of settings is said in the changelog.
+
 ## 2026-11-11: OneOrigin brand source
 
 Owner decision (2026-11-11): "A: send it, accept guidelines (Recommended)". Tests went from 281 to 282: Mac app 15 to 16 (`apps/desktop/test/theme.test.ts`). The rest are unchanged.
