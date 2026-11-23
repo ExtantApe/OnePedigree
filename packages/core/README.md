@@ -4,8 +4,8 @@ A species-neutral pedigree framework for humans and other animals (and plants): 
 data model, graph validation, bounded ancestry traversal, view projections, automatic
 layout, server-renderable React components and a Payload CMS plugin.
 
-> **Status: alpha.** The schema-version-1 contract is stable in intent; package APIs may
-> still change before the first prerelease.
+> **Status: early alpha.** On npm as `0.1.0-alpha` versions, with 112 automated tests. The schema-version-1 file
+> format is meant to stay; the APIs may still change.
 
 | Package | Purpose |
 |---|---|
@@ -81,13 +81,13 @@ dominant, codominant, polygenic or unknown; allelic complexes via a shared `locu
 Z- or X-linked) and per-individual `GenotypeRecord`s (visual, single, super, het,
 possible het with a chance, non-carrier, unknown; with how it is known).
 
-- `pairingOdds` — expected offspring per locus (super forms, complexes, sex-linked
+- `pairingOdds`: expected offspring per locus (super forms, complexes, sex-linked
   splits by offspring sex); unrecorded genes are assumed absent and reported as assumptions.
-- `expectedNormalLookingRecord` — e.g. 66% possible het from two hets.
-- `checkOffspring` — flags offspring the recorded parents can't produce (check parentage).
-- `carrierFromOffspring` — carriers proven by a visual recessive offspring; suggestions
+- `expectedNormalLookingRecord`: e.g. 66% possible het from two hets.
+- `checkOffspring`: flags offspring the recorded parents can't produce (check parentage).
+- `carrierFromOffspring`: carriers proven by a visual recessive offspring; suggestions
   only (`basis: 'inferred'`).
-- `genotypeSummary` — "Super Pastel 66% possible het Pied" from the records.
+- `genotypeSummary`: "Super Pastel 66% possible het Pied" from the records.
 
 Nothing is guessed: polygenic and unproven genes have no odds, and a sex-linked gene needs the sex.
 In `@extantape/onepedigree-react`, `genotypes` draws allele dots for several genes on every node
