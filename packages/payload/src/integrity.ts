@@ -20,6 +20,7 @@ import {
 
 import { childrenWhere, getAt, graphSelect, idOf, maternalRoles, readCohort, readMode, readParents, toIndividual } from './mapping.js'
 import { withStoredParents } from './privacy.js'
+import { childReq } from './request.js'
 import type { ResolvedOptions } from './types.js'
 
 /** Context flag for the plugin's own writes (detaching references, internal updates). */
@@ -60,7 +61,7 @@ export async function checkParentage(
   const unique = [...new Set(ids)]
   const visible = unique.length
     ? ((
-        await withStoredParents(req, () =>
+        await withStoredParents(req, (rawReq) =>
           req.payload.find({
             collection: opts.collection as CollectionSlug,
             where: { id: { in: unique } },
@@ -68,7 +69,7 @@ export async function checkParentage(
             pagination: false,
             select: graphSelect(opts) as never,
             overrideAccess: trusted,
-            req,
+            req: rawReq,
           }),
         )
       ).docs as unknown as Record<string, unknown>[])
@@ -177,7 +178,7 @@ export const parentageBeforeChange =
         data: { revision: (current?.revision ?? 0) + 1 } as never,
         overrideAccess: true,
         context: { [SKIP]: true },
-        req,
+        req: childReq(req),
       })
     }
     return data
@@ -221,7 +222,7 @@ export const parentBeforeDelete =
                 parents: ((getAt(child, `${m.path}.parents`) as Record<string, unknown>[]) ?? []).filter((r) => idOf(r[m.individualField]) !== String(id)),
               },
             }
-      await req.payload.update({ collection: opts.collection as CollectionSlug, id: child.id, data: data as never, overrideAccess: true, context: { [SKIP]: true }, req })
+      await req.payload.update({ collection: opts.collection as CollectionSlug, id: child.id, data: data as never, overrideAccess: true, context: { [SKIP]: true }, req: childReq(req) })
     }
   }
 

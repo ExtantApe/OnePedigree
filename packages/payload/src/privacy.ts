@@ -3,6 +3,7 @@ import { validations, ValidationError, type CollectionAfterReadHook, type Collec
 import { isBiologicalKind } from '@extantape/onepedigree-core'
 
 import { getAt, idOf } from './mapping.js'
+import { childReq } from './request.js'
 import type { ResolvedOptions } from './types.js'
 
 /**
@@ -39,17 +40,13 @@ const RAW = 'onepedigreeRawParents'
 
 /**
  * Runs `read` with stored parent IDs left in place, for the plugin's own reads through access control: the pedigree
- * and relatives endpoints, which replace hidden parents with their own placeholders, and the parentage check. A
- * counter, not a flag, so overlapping reads can't switch redaction back on for each other. Never return these
- * documents to a reader as they are.
+ * and relatives endpoints, which replace hidden parents with their own placeholders, and the parentage check. `read`
+ * gets a child request carrying the marker and must pass it to Payload; the caller's request is left as it was, so
+ * sibling documents in a bulk update and later reads on the same request are still redacted. A counter, not a flag,
+ * so nested reads keep it. Never return these documents to a reader as they are.
  */
-export async function withStoredParents<T>(req: PayloadRequest, read: () => Promise<T>): Promise<T> {
-  req.context[RAW] = ((req.context[RAW] as number | undefined) ?? 0) + 1
-  try {
-    return await read()
-  } finally {
-    req.context[RAW] = (req.context[RAW] as number) - 1
-  }
+export async function withStoredParents<T>(req: PayloadRequest, read: (req: PayloadRequest) => Promise<T>): Promise<T> {
+  return read(childReq(req, { [RAW]: ((req.context[RAW] as number | undefined) ?? 0) + 1 }))
 }
 
 /** The IDs among `ids` that the request's user may read. Cached on the request. */
