@@ -29,7 +29,7 @@ export function payloadRepository(req: PayloadRequest, opts: ResolvedOptions, tr
   // Stored IDs, so hidden parents can be told apart from unloaded ones and redacted below (see `redact`).
   const find = async (where: Where) =>
     (
-      await withStoredParents(req, () => req.payload.find({
+      await withStoredParents(req, (rawReq) => req.payload.find({
         collection: opts.collection as CollectionSlug,
         where,
         depth: 0,
@@ -37,7 +37,7 @@ export function payloadRepository(req: PayloadRequest, opts: ResolvedOptions, tr
         pagination: false,
         select: graphSelect(opts, req.user) as never,
         overrideAccess: trusted,
-        req,
+        req: rawReq,
       }))
     ).docs as Doc[]
   return { getByIds: (ids) => find({ id: { in: [...ids] } }), findChildrenOf: (ids) => find(childrenWhere(opts, ids)) }
@@ -82,7 +82,7 @@ export function redact(individuals: Individual[], hidden: ReadonlySet<string>, o
 }
 
 async function readable(req: PayloadRequest, collection: string, id: string) {
-  return withStoredParents(req, () => req.payload.findByID({ collection: collection as CollectionSlug, id, depth: 0, overrideAccess: false, disableErrors: true, req }))
+  return withStoredParents(req, (rawReq) => req.payload.findByID({ collection: collection as CollectionSlug, id, depth: 0, overrideAccess: false, disableErrors: true, req: rawReq }))
 }
 
 async function canUpdate(req: PayloadRequest, opts: ResolvedOptions, id: string) {
