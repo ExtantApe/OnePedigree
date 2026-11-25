@@ -1,6 +1,6 @@
 {
   "name": "@extantape/onepedigree-studbook",
-  "version": "0.1.0-alpha.22",
+  "version": "0.1.0-alpha.23",
   "type": "module",
   "description": "OnePedigree studbook: species-neutral studbook numbering, pedigree-based kinship, inbreeding, mean kinship, gene diversity and founder analysis, and PMx export, for any managed population.",
   "keywords": [

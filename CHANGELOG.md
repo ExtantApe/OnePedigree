@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.23
 
 - **Security: the Payload plugin's flags stay off the caller's request.** Payload merges a nested call's `context` into the request it is given and leaves it there, and runs a bulk update's docs in parallel on one request. The plugin's skip flag, its trusted flag and its raw-parents counter could stay on that shared request, so a later or sibling write skipped the parentage checks (a record could be saved as its own parent) and a sibling read skipped redaction (a hidden parent's ID could show). Nested reads and writes now run on a child request with their own `context` and data loader. Reported by Captive Origins (bottle 186, K765). **Change for hosts:** `withStoredParents(req, read)` now passes `read` a child request, and `read` must hand that request to Payload. A callback that ignores it still works but gets redacted parents, so it fails closed. Tested: five new Vitest tests, all failing on the old code (a write after a parentage change on one request, a detach on delete, stored-parent reads, a sibling read during `withStoredParents`, and a bulk update with a self-parent doc), the full test suite, typecheck, build and the leak check. Not tested: a host site's own `withStoredParents` callers.
 
