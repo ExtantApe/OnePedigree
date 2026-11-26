@@ -299,3 +299,16 @@ Scope: every package and the desktop app, with the Payload plugin's access rules
 
 - Payload's own internals, such as relationship validation and admin rendering.
 - The playground app, which is a demo.
+
+## 2026-11-26: hidden records in the parentage and cohort checks
+
+Promises: the parentage check and the cohort check give the same answer with or without a record the requester cannot read; a hidden birthing parent never shows in a cohort read or filter; each write carries its own access mode.
+
+Covered (`packages/payload/test/hidden-parent-oracle.test.ts`, `operation-isolation.test.ts`), each run both ways, with the refusals that must stay:
+- A hidden birthing parent, a made-up ID, a hidden or missing cohort and hidden members all give the same reply. A visible conflict and trusted server code are still refused.
+- A host hook that writes with access overridden on the same request, on individuals and on cohorts, does not turn the checks off for the outer write.
+- A cohort's hidden birthing parent shows as a placeholder on single and list reads, is kept when an editor saves the cohort, can't be replaced, and can't be probed with a filter.
+
+Accepted and documented (README): the loop check walks descendants with full access but reports only through readable parents; the restrict-mode 409 on deleting a recorded parent does not depend on whether children are readable.
+
+Skipped: live REST and GraphQL requests for the cohort redaction (the Local API path runs the same hook; the individuals' redaction is covered over both).

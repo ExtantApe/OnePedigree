@@ -1,4 +1,4 @@
-import { validations, ValidationError, type CollectionAfterReadHook, type CollectionBeforeValidateHook, type CollectionSlug, type PayloadRequest, type Where } from 'payload'
+import { APIError, validations, ValidationError, type CollectionAfterReadHook, type CollectionBeforeOperationHook, type CollectionBeforeValidateHook, type CollectionSlug, type PayloadRequest, type Where } from 'payload'
 
 import { isBiologicalKind } from '@extantape/onepedigree-core'
 
@@ -216,4 +216,58 @@ export const keepHiddenParents =
     for (const o of originals) if (!used.has(o)) rows.push({ ...o, [m.individualField]: idOf(o[m.individualField]) })
     setAt(d, `${m.path}.parents`, rows)
     return d
+  }
+
+/**
+ * A cohort's birthing parent the reader may not read comes back as `{ private: true }` (or null with
+ * `hiddenRecords: 'omit'` and in GraphQL), like a hidden parent on an individual. Trusted reads are unchanged.
+ */
+export const birthParentAfterRead =
+  (opts: ResolvedOptions): CollectionAfterReadHook =>
+  async ({ doc, req, overrideAccess }) => {
+    const field = opts.cohorts?.birthParentField
+    if (!field || overrideAccess === true || ((req.context[RAW] as number | undefined) ?? 0) > 0 || !doc || typeof doc !== 'object') return doc
+    const id = idOf(getAt(doc, field))
+    if (!id || (await readableIds(req, opts, [id])).has(id)) return doc
+    setAt(doc, field, opts.hiddenRecords === 'placeholder' && req.payloadAPI !== 'GraphQL' ? { private: true } : null)
+    return doc
+  }
+
+/** The write side for a cohort: a hidden birthing parent stays as stored; a placeholder or empty value means unchanged. */
+export const keepHiddenBirthParent =
+  (opts: ResolvedOptions, trustedKey: string, skipKey: string): CollectionBeforeValidateHook =>
+  async ({ data, originalDoc, req, operation, context }) => {
+    const field = opts.cohorts?.birthParentField
+    if (!field || operation !== 'update' || !data || !originalDoc || context[skipKey] || context[trustedKey] === true) return data
+    const before = idOf(getAt(originalDoc, field))
+    if (!before || (await readableIds(req, opts, [before])).has(before)) return data
+    const d = data as Record<string, unknown>
+    const next = getAt(d, field)
+    if (next === undefined) return d
+    if (next === null || isPrivateParent(next) || idOf(next) === before) setAt(d, field, before)
+    else
+      throw new ValidationError({
+        collection: opts.cohorts!.collection,
+        errors: [{ path: field, message: 'This parent is private to you, so you can’t change or remove it. Ask someone who can see it.' }],
+      })
+    return d
+  }
+
+const mentions = (where: unknown, field: string): boolean =>
+  Array.isArray(where)
+    ? where.some((w) => mentions(w, field))
+    : Boolean(where) && typeof where === 'object' && Object.entries(where as object).some(([k, v]) => k === field || k.startsWith(`${field}.`) || mentions(v, field))
+
+/**
+ * Filtering cohorts by their birthing parent answers "is this hidden record the mother?" for any ID. With access
+ * control on, a filter on that field is refused, so a hidden parent can't be probed.
+ */
+export const refuseBirthParentFilter =
+  (opts: ResolvedOptions): CollectionBeforeOperationHook =>
+  ({ args, operation }) => {
+    const field = opts.cohorts?.birthParentField
+    const a = args as { overrideAccess?: boolean; where?: unknown }
+    if (field && a.overrideAccess !== true && ['read', 'count', 'readDistinct', 'update', 'delete'].includes(operation) && mentions(a.where, field))
+      throw new APIError('Cohorts can’t be filtered by their birthing parent.', 400)
+    return args
   }

@@ -64,6 +64,15 @@ A cohort is one birthing event (a clutch, a litter, twins): one mother, fathers 
 member. With `cohorts.birthParentField` (the cohort's field naming the mother), a member whose
 recorded mother differs is refused, and so is changing the cohort's mother while members disagree.
 
+These checks use only what the requester can read, so their answers are the same with or without
+a hidden record: a mother, birthing parent, cohort or member the requester can't read is left out
+of the comparison. The cost is that an editor can save a mother that differs from a hidden
+birthing parent, or set a birthing parent that a hidden member contradicts. Server code with
+access overridden is checked against everything. A hidden birthing parent comes back from plain
+cohort reads as `{ "private": true }` (null in GraphQL, or with `hiddenRecords: 'omit'`), is kept
+as stored when an editor saves the cohort, and a filter on the birthing parent field is refused
+with a 400 (it would answer "is this hidden record the mother?" for any ID).
+
 ## Integrity
 
 On every write (Admin, REST, GraphQL, Local API, imports):
@@ -98,6 +107,12 @@ The same holds for plain collection reads (REST, GraphQL, the Admin, and the Loc
 `overrideAccess: false`), single or list, at any depth. A parent the reader can't read comes back as
 `{ "private": true }` with `hiddenRecords: 'placeholder'`, or is left out with `'omit'`. GraphQL
 returns `null` for it. Trusted Local API reads (the default `overrideAccess: true`) are unchanged.
+
+Two answers still depend on records the requester can't read, and are accepted: the loop check
+walks every descendant with full access (it only reports a loop through a parent the requester
+can read, so a hidden record never shows in its message), and with `onReferencedIndividualDelete:
+'restrict'`, deleting a recorded parent is refused with a 409 whether or not the children can be
+read. The deleter needs delete access, and the alternative is a delete that orphans hidden records.
 When someone saves a record that showed them a private parent, that parent is kept as stored: a
 placeholder, an empty picker or a missing row means "unchanged", and replacing it with another
 parent is refused. The kept parent also passes the parent field's validation, which would

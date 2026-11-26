@@ -15,6 +15,7 @@ import {
   type CollectionBeforeOperationHook,
   type CollectionSlug,
   type GlobalSlug,
+  isolateObjectProperty,
   type PayloadRequest,
 } from 'payload'
 
@@ -193,10 +194,16 @@ export const parentageBeforeChange =
  * Records whether this create/update bypasses access control, for the readability check. Only an explicit `true`
  * does (the Local API's default): REST, GraphQL and the Admin leave it unset, and Payload then enforces access.
  */
-export const rememberAccessMode: CollectionBeforeOperationHook = ({ args, operation, context }) => {
-  if (operation === 'create' || operation === 'update' || operation === 'updateByID')
-    context[TRUSTED] = (args as { overrideAccess?: boolean }).overrideAccess === true
-  return args
+export const rememberAccessMode: CollectionBeforeOperationHook = ({ args, operation }) => {
+  if (operation !== 'create' && operation !== 'update' && operation !== 'updateByID') return args
+  const a = args as { overrideAccess?: boolean; req?: PayloadRequest }
+  // The flag belongs to this operation. Payload merges a nested call's context into the request it is handed, so a
+  // host hook that writes with access overridden on this request would otherwise switch the checks off for the
+  // outer write. This operation gets its own request (same user and transaction), and its hooks read the flag there.
+  if (!a.req) return args
+  const req = isolateObjectProperty(a.req, ['context'])
+  req.context = { ...a.req.context, [TRUSTED]: a.overrideAccess === true }
+  return { ...args, req }
 }
 
 /** Deleting a recorded parent: refuse (archive instead) or remove the references, per the plugin option. */
