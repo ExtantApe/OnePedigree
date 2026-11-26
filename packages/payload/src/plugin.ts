@@ -6,7 +6,7 @@ import { cohortMembersEndpoint, pedigreeEndpoint, relativesEndpoint, validateEnd
 import { createParentageField } from './fields.js'
 import { cohortBirthParentBeforeChange, parentageBeforeChange, parentBeforeDelete, rememberAccessMode, SKIP, TRUSTED } from './integrity.js'
 import { resolveOptions } from './mapping.js'
-import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, refuseBirthParentFilter } from './privacy.js'
+import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, guardParentQueries } from './privacy.js'
 import type { OnePedigreePluginOptions, ResolvedOptions } from './types.js'
 
 const CLIENT = '@extantape/payload-plugin-onepedigree/client'
@@ -126,7 +126,7 @@ export const onePedigree =
           fields: [...fields, ...(opts.admin?.panel === false ? [] : [panelField(opts)])],
           hooks: {
             ...c.hooks,
-            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode],
+            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode, guardParentQueries(opts, 'individuals')],
             beforeValidate: [...(c.hooks?.beforeValidate ?? []), keepHiddenParents(opts, TRUSTED, SKIP)],
             beforeChange: [...(c.hooks?.beforeChange ?? []), parentageBeforeChange(opts)],
             beforeDelete: [...(c.hooks?.beforeDelete ?? []), parentBeforeDelete(opts)],
@@ -142,7 +142,7 @@ export const onePedigree =
           endpoints: [...(Array.isArray(c.endpoints) ? c.endpoints : []), cohortMembersEndpoint(opts)],
           hooks: {
             ...c.hooks,
-            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode, refuseBirthParentFilter(opts)],
+            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode, guardParentQueries(opts, 'cohorts')],
             beforeValidate: [...(c.hooks?.beforeValidate ?? []), keepHiddenBirthParent(opts, TRUSTED, SKIP)],
             beforeChange: [...(c.hooks?.beforeChange ?? []), cohortBirthParentBeforeChange(opts)],
             afterRead: [...(c.hooks?.afterRead ?? []), birthParentAfterRead(opts)],

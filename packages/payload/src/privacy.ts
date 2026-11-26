@@ -238,7 +238,13 @@ export const keepHiddenBirthParent =
   (opts: ResolvedOptions, trustedKey: string, skipKey: string): CollectionBeforeValidateHook =>
   async ({ data, originalDoc, req, operation, context }) => {
     const field = opts.cohorts?.birthParentField
-    if (!field || operation !== 'update' || !data || !originalDoc || context[skipKey] || context[trustedKey] === true) return data
+    if (!field || (operation !== 'update' && operation !== 'create') || !data || context[skipKey] || context[trustedKey] === true) return data
+    // A new or changed birthing parent must be one the editor can read; a hidden ID and a made-up one get the same refusal.
+    const incoming = idOf(getAt(data, field))
+    const was = originalDoc ? idOf(getAt(originalDoc, field)) : null
+    if (incoming && incoming !== was && !isPrivateParent(getAt(data, field)) && !(await readableIds(req, opts, [incoming])).has(incoming))
+      throw new ValidationError({ collection: opts.cohorts!.collection, errors: [{ path: field, message: 'A parent does not exist or you cannot access it.' }] })
+    if (!originalDoc) return data
     const before = idOf(getAt(originalDoc, field))
     if (!before || (await readableIds(req, opts, [before])).has(before)) return data
     const d = data as Record<string, unknown>
@@ -253,21 +259,86 @@ export const keepHiddenBirthParent =
     return d
   }
 
-const mentions = (where: unknown, field: string): boolean =>
-  Array.isArray(where)
-    ? where.some((w) => mentions(w, field))
-    : Boolean(where) && typeof where === 'object' && Object.entries(where as object).some(([k, v]) => k === field || k.startsWith(`${field}.`) || mentions(v, field))
+const REFUSED = 'Parent fields can’t be filtered or sorted.'
+const refused = () => new APIError(REFUSED, 400)
+
+/** The paths on a collection that name a parent: the individuals' parent fields and cohort birthing parent, or the cohorts' birthing parent. */
+const guardedPaths = (opts: ResolvedOptions, side: 'individuals' | 'cohorts'): string[] => {
+  const m = opts.fields.parentage
+  const birth = opts.cohorts?.birthParentField
+  if (side === 'cohorts') return birth ? [birth] : []
+  const own = m.kind === 'role-fields' ? Object.values(m.roles) : [`${m.path}.parents.${m.individualField}`, `${m.path}.mother`, `${m.path}.father`]
+  return birth && m.cohort ? [...own, `${m.cohort}.${birth}`] : own
+}
+
+const COMPARE = new Set(['equals', 'in', 'not_equals', 'not_in'])
 
 /**
- * Filtering cohorts by their birthing parent answers "is this hidden record the mother?" for any ID. With access
- * control on, a filter on that field is refused, so a hidden parent can't be probed.
+ * Filtering or sorting by a parent field answers "is this hidden record the parent?" for any ID, or orders a hidden
+ * parent among known ones. With access control on, on every read path (find, count, distinct, versions, GraphQL):
+ * sorting and paths below a parent field are refused; `equals`, `in`, `not_equals` and `not_in` are allowed only when
+ * every ID is one the requester can read, so a hidden ID and a made-up one get the same answer; `exists` and an empty
+ * value only with `hiddenRecords: 'placeholder'`, where a hidden parent shows as a placeholder and counts as set.
  */
-export const refuseBirthParentFilter =
-  (opts: ResolvedOptions): CollectionBeforeOperationHook =>
-  ({ args, operation }) => {
-    const field = opts.cohorts?.birthParentField
-    const a = args as { overrideAccess?: boolean; where?: unknown }
-    if (field && a.overrideAccess !== true && ['read', 'count', 'readDistinct', 'update', 'delete'].includes(operation) && mentions(a.where, field))
-      throw new APIError('Cohorts can’t be filtered by their birthing parent.', 400)
+export const guardParentQueries =
+  (opts: ResolvedOptions, side: 'individuals' | 'cohorts'): CollectionBeforeOperationHook =>
+  async ({ args, operation }) => {
+    const a = args as { overrideAccess?: boolean; where?: unknown; sort?: unknown; field?: unknown; req?: PayloadRequest }
+    const ops = ['read', 'count', 'readDistinct', 'update', 'delete', 'countVersions']
+    if (a.overrideAccess === true || !ops.includes(operation)) return args
+    const paths = guardedPaths(opts, side)
+    if (!paths.length) return args
+    // Payload reports findVersions as a plain read, so a version's fields (`version.<field>`) are treated like the document's.
+    const strip = (k: string) => (k.startsWith('version.') ? k.slice('version.'.length) : k)
+    // 'exact' is the parent field itself; 'below' is a path through it (a join to the parent's own fields).
+    const classify = (raw: string): 'exact' | 'below' | null => {
+      const k = strip(raw)
+      for (const p of paths) {
+        if (k === p) return 'exact'
+        if (k.startsWith(`${p}.`)) return 'below'
+      }
+      return null
+    }
+    const sorts = (Array.isArray(a.sort) ? a.sort : typeof a.sort === 'string' ? a.sort.split(',') : []).map((x) => String(x).trim().replace(/^-/, ''))
+    if (sorts.some((k) => classify(k))) throw refused()
+    if (typeof a.field === 'string' && classify(a.field)) throw refused()
+    const ids: string[] = []
+    const walk = (w: unknown): void => {
+      if (Array.isArray(w)) return w.forEach(walk)
+      if (!w || typeof w !== 'object') return
+      for (const [k, v] of Object.entries(w as Record<string, unknown>)) {
+        if (k === 'and' || k === 'or') {
+          walk(v)
+          continue
+        }
+        const kind = classify(k)
+        if (!kind) {
+          walk(v)
+          continue
+        }
+        if (kind === 'below' || !v || typeof v !== 'object' || Array.isArray(v)) throw refused()
+        for (const [op, operand] of Object.entries(v as Record<string, unknown>)) {
+          if (op === 'exists') {
+            if (opts.hiddenRecords !== 'placeholder') throw refused()
+            continue
+          }
+          if (!COMPARE.has(op)) throw refused()
+          for (const o of Array.isArray(operand) ? operand : typeof operand === 'string' && (op === 'in' || op === 'not_in') ? operand.split(',') : [operand]) {
+            const id = idOf(o)
+            if (id === null) {
+              if (opts.hiddenRecords !== 'placeholder') throw refused()
+              continue
+            }
+            ids.push(id)
+          }
+        }
+      }
+    }
+    walk(a.where)
+    if (!ids.length) return args
+    if (!a.req) throw refused()
+    // An ID the database can't parse is as unreadable as a made-up one.
+    const ok = await readableIds(a.req, opts, ids).catch(() => new Set<string>())
+    if (ids.some((id) => !ok.has(id))) throw refused()
     return args
   }

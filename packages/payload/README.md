@@ -70,8 +70,12 @@ of the comparison. The cost is that an editor can save a mother that differs fro
 birthing parent, or set a birthing parent that a hidden member contradicts. Server code with
 access overridden is checked against everything. A hidden birthing parent comes back from plain
 cohort reads as `{ "private": true }` (null in GraphQL, or with `hiddenRecords: 'omit'`), is kept
-as stored when an editor saves the cohort, and a filter on the birthing parent field is refused
-with a 400 (it would answer "is this hidden record the mother?" for any ID).
+as stored when an editor saves the cohort, and a hidden birthing parent can't be probed through queries.
+With access control on, sorting by a parent field (the cohort's birthing parent, `dam`, `sire`), listing its
+distinct values and filtering below it are refused with a 400. `equals`, `in`, `not_equals` and `not_in` work only
+with IDs the requester can read, so a hidden ID and a made-up one get the same answer. `exists` works only with
+`hiddenRecords: 'placeholder'`. This covers versions and filters through the individuals' cohort field too. Saving a
+cohort with a birthing parent the editor can't read is refused.
 
 ## Integrity
 
