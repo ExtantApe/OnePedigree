@@ -140,7 +140,11 @@ export const onePedigree =
         return {
           ...c,
           endpoints: [...(Array.isArray(c.endpoints) ? c.endpoints : []), cohortMembersEndpoint(opts)],
-          hooks: { ...c.hooks, beforeChange: [...(c.hooks?.beforeChange ?? []), cohortBirthParentBeforeChange(opts)] },
+          hooks: {
+            ...c.hooks,
+            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode],
+            beforeChange: [...(c.hooks?.beforeChange ?? []), cohortBirthParentBeforeChange(opts)],
+          },
         }
       return c
     })
