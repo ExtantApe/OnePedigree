@@ -34,12 +34,19 @@ describe('guard limits fail closed', () => {
     await expect(c.lf('animals', loop)).rejects.toSatisfy(refusal)
   })
 
-  it('resolves a where of about 10,000 characters quickly', async () => {
+  it('resolves a where of about 10,000 characters in about the time of a small one', async () => {
     const where = { or: Array.from({ length: 250 }, (_, i) => ({ 'clutch.name': { equals: `clutch-number-${i}-padding-padding` } })) }
     expect(JSON.stringify(where).length).toBeGreaterThan(10_000)
-    const t = performance.now()
-    await c.lf('animals', where)
-    expect(performance.now() - t).toBeLessThan(2000)
+    // Measured against a small query on the same machine at the same moment, so a loaded machine slows both.
+    const time = async (w: object) => {
+      const t = performance.now()
+      await c.lf('animals', w)
+      return performance.now() - t
+    }
+    const small: number[] = []
+    for (let i = 0; i < 3; i++) small.push(await time({ 'clutch.name': { equals: 'x' } }))
+    const baseline = [...small].sort((a, b) => a - b)[1]!
+    expect(await time(where)).toBeLessThan(baseline * 40 + 1000)
   })
 
   it('refuses a hidden field by the guard, not only by Payload', async () => {
