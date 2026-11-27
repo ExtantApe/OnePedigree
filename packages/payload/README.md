@@ -114,10 +114,11 @@ plugin's, no email adapter is set, and Payload starts with `onInit` off, none of
 then installs on the first query that touches a collection this plugin guards, or a parent field of the individuals or
 cohorts collection (their field read access is a trip point, and Payload checks it for every query that reaches them).
 That first query is refused once, and so is the first Admin panel request for the signed-in user's permissions (it
-works when retried). If that later plugin also replaced the individuals or cohorts collection wholesale, its hooks and
-access included, a query from a late collection that only reaches into it runs no code of this plugin and can tell a hidden
-parent from a made-up one. Don't replace the database adapter, the store or those two collections in a plugin that
-runs after this one.
+works when retried). If that later plugin also overwrote the read access of the individuals or cohorts collection, both
+the collection's own and its parent fields' `access.read`, a query from a late collection that only reaches into it runs
+no code of this plugin and can tell a hidden parent from a made-up one. The collection's hooks can all still be in place;
+replacing the whole collection does the same. In a plugin that runs after this one, don't replace the database adapter
+or the store, and don't replace those two collections or their read access, field read access included.
 
 The plugin can't judge hooks other code adds. A later `afterRead` hook on the individuals or cohorts collection
 that reads the record again with `overrideAccess: true` and returns it gives back the hidden parent the plugin
