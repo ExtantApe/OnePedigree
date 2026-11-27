@@ -1,9 +1,10 @@
 import { PEDIGREE_VIEWS } from '@extantape/onepedigree-core'
-import type { CollectionConfig, Config, Field, GlobalConfig, Plugin } from 'payload'
+import type { CollectionConfig, Config, Field, GlobalConfig, Payload, Plugin } from 'payload'
 
 import { createCohortsCollection, createIndividualsCollection } from './collections.js'
 import { cohortMembersEndpoint, pedigreeEndpoint, relativesEndpoint, validateEndpoint } from './endpoints.js'
 import { createParentageField } from './fields.js'
+import { guardGlobalVersions } from './globalGuard.js'
 import { cohortBirthParentBeforeChange, parentageBeforeChange, parentBeforeDelete, rememberAccessMode, SKIP, TRUSTED } from './integrity.js'
 import { resolveOptions } from './mapping.js'
 import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, guardParentQueries } from './privacy.js'
@@ -156,24 +157,33 @@ export const onePedigree =
       collections = collections.map((c): CollectionConfig => ({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
     }
 
-    const globals = [...(config.globals ?? [])]
+    const globals = (config.globals ?? []).map((g) => (opts.disabled ? g : guardGlobalVersions(g, opts)))
     if (!opts.disabled) {
       globals.push(graphGlobal(opts))
       if (opts.admin?.settings !== false && !globals.some((g) => g.slug === opts.settingsGlobal)) globals.push(settingsGlobal(opts))
     }
-    // The graph revision document must exist before the first parentage write: two transactions
-    // that each create it would not conflict, so concurrent writes could both commit.
-    const onInit: Config['onInit'] = async (payload) => {
-      await config.onInit?.(payload)
+    // A collection or global added by a plugin that runs after this one isn't in the lists above. Hooks and access
+    // functions are read from the final config on each operation, so they get the guard here, once they exist. This
+    // runs when the database adapter starts, which is before onInit and also happens when Payload is started with
+    // `disableOnInit` (its own CLI scripts do), and again in onInit for anything added after that.
+    const installLate = (payload: Payload) => {
       if (opts.disabled) return
-      // A collection added by a plugin that runs after this one isn't in the list above. Hooks are read from the
-      // final config on each operation, so it gets the guard here, once it exists.
       const finalCollections = [...(payload.config.collections ?? []), ...Object.values(payload.collections ?? {}).map((c) => c.config)]
       for (const c of new Set(finalCollections)) {
         const hooks = (c.hooks ??= {} as never) as { beforeOperation?: unknown[] }
         const list = (hooks.beforeOperation ??= [])
         if (!list.includes(guard)) list.push(guard)
       }
+      for (const g of new Set([...(payload.config.globals ?? []), ...(payload.globals?.config ?? [])])) guardGlobalVersions(g, opts, true)
+    }
+    const host = config.db as { init?: (args: { payload: Payload }) => unknown } | undefined
+    const db = !opts.disabled && host && typeof host.init === 'function' ? { ...host, init: (args: { payload: Payload }) => (installLate(args.payload), host.init!(args)) } : host
+    // The graph revision document must exist before the first parentage write: two transactions
+    // that each create it would not conflict, so concurrent writes could both commit.
+    const onInit: Config['onInit'] = async (payload) => {
+      await config.onInit?.(payload)
+      if (opts.disabled) return
+      installLate(payload)
       // Retried: on a fresh database this can race other startup writes creating the same
       // MongoDB collection (a transient transaction error). Startup is never blocked by it.
       for (let attempt = 1; attempt <= 5; attempt++)
@@ -187,5 +197,5 @@ export const onePedigree =
           else await new Promise((r) => setTimeout(r, 200 * attempt))
         }
     }
-    return { ...config, collections, globals, onInit, custom: { ...config.custom, onepedigree: opts } }
+    return { ...config, ...(db ? { db: db as never } : {}), collections, globals, onInit, custom: { ...config.custom, onepedigree: opts } }
   }

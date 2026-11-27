@@ -52,8 +52,8 @@
     "@extantape/onepedigree-react": "workspace:^"
   },
   "peerDependencies": {
-    "@payloadcms/ui": "^3.80.0",
-    "payload": "^3.80.0",
+    "@payloadcms/ui": "~3.92.1",
+    "payload": "~3.92.1",
     "react": ">=19"
   },
   "peerDependenciesMeta": {
