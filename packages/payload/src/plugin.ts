@@ -1,11 +1,12 @@
 import { PEDIGREE_VIEWS } from '@extantape/onepedigree-core'
-import { databaseKVAdapter, type Access, type CollectionBeforeOperationHook, type CollectionConfig, type Config, type EmailAdapter, type Field, type GlobalConfig, type KVAdapterResult, type Payload, type Plugin } from 'payload'
+import { databaseKVAdapter, type Access, type CollectionBeforeOperationHook, type CollectionConfig, type Config, type EmailAdapter, type Field, type FieldAccess, type GlobalConfig, type KVAdapterResult, type Payload, type Plugin } from 'payload'
 
 import { createCohortsCollection, createIndividualsCollection } from './collections.js'
 import { cohortMembersEndpoint, pedigreeEndpoint, relativesEndpoint, validateEndpoint } from './endpoints.js'
-import { assertResolverGuards } from './parentPaths.js'
+import { anchorAdapter, checkpoint, ensureGuarded, isGuarded, mark } from './install.js'
+import { guardedPaths } from './parentPaths.js'
 import { createParentageField } from './fields.js'
-import { globalVersionsGuarded, guardGlobalVersions } from './globalGuard.js'
+import { guardGlobalVersions } from './globalGuard.js'
 import { cohortBirthParentBeforeChange, parentageBeforeChange, parentBeforeDelete, rememberAccessMode, SKIP, TRUSTED } from './integrity.js'
 import { resolveOptions } from './mapping.js'
 import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, guardParentQueries, refused } from './privacy.js'
@@ -67,19 +68,23 @@ const parentFieldPaths = (opts: ResolvedOptions): string[] => {
   return m.kind === 'role-fields' ? Object.values(m.roles) : [`${m.path}.parents.${m.individualField}`, `${m.path}.mother`, `${m.path}.father`]
 }
 
-/** Gives the relationship field at `path` (through groups, arrays, rows, collapsibles and tabs) the kept-parent validation. */
-function wrapParentValidate(fields: Field[], path: string[]): Field[] {
+/** Applies `change` to the named field at `path`, through groups, arrays, rows, collapsibles and tabs. */
+function mapFieldAt(fields: Field[], path: string[], change: (f: Field) => Field): Field[] {
   return fields.map((f): Field => {
     const named = 'name' in f && f.name
     if (!named) {
-      if (f.type === 'tabs') return { ...f, tabs: f.tabs.map((t) => ('name' in t && t.name ? (t.name === path[0] ? { ...t, fields: wrapParentValidate(t.fields, path.slice(1)) } : t) : { ...t, fields: wrapParentValidate(t.fields, path) })) }
-      return 'fields' in f ? ({ ...f, fields: wrapParentValidate(f.fields, path) } as Field) : f
+      if (f.type === 'tabs') return { ...f, tabs: f.tabs.map((t) => ('name' in t && t.name ? (t.name === path[0] ? { ...t, fields: mapFieldAt(t.fields, path.slice(1), change) } : t) : { ...t, fields: mapFieldAt(t.fields, path, change) })) }
+      return 'fields' in f ? ({ ...f, fields: mapFieldAt(f.fields, path, change) } as Field) : f
     }
     if (f.name !== path[0]) return f
-    if (path.length === 1) return f.type === 'relationship' ? ({ ...f, validate: keptParentValidate(f.validate as never) } as Field) : f
-    return 'fields' in f ? ({ ...f, fields: wrapParentValidate(f.fields, path.slice(1)) } as Field) : f
+    if (path.length === 1) return change(f)
+    return 'fields' in f ? ({ ...f, fields: mapFieldAt(f.fields, path.slice(1), change) } as Field) : f
   })
 }
+
+/** Gives the relationship field at `path` the kept-parent validation. */
+const wrapParentValidate = (fields: Field[], path: string[]): Field[] =>
+  mapFieldAt(fields, path, (f) => (f.type === 'relationship' ? ({ ...f, validate: keptParentValidate(f.validate as never) } as Field) : f))
 
 /**
  * OnePedigree for Payload. Maps (or creates) an individuals collection,
@@ -110,8 +115,8 @@ export const onePedigree =
     if (opts.cohorts && !collections.some((c) => c.slug === opts.cohorts!.collection))
       throw new Error(`OnePedigree: cohorts collection "${opts.cohorts.collection}" not found. Add it before this plugin (or set cohorts.managed in managed mode), so its birth parent can be kept private.`)
     // The redaction hooks this plugin puts on those two collections, checked again at start in case a later plugin replaced them.
-    const individualsAfterRead = parentageAfterRead(opts)
-    const cohortsAfterRead = birthParentAfterRead(opts)
+    const individualsAfterRead = mark(parentageAfterRead(opts), 'redact', opts)
+    const cohortsAfterRead = opts.cohorts ? mark(birthParentAfterRead(opts), 'redact', opts, opts.cohorts.collection) : birthParentAfterRead(opts)
 
     collections = collections.map((c): CollectionConfig => {
       if (c.slug === opts.collection) {
@@ -160,36 +165,50 @@ export const onePedigree =
       return c
     })
     // Every collection, not only the individuals and cohorts: a query can reach a parent field through any relationship.
+    // The guard first makes sure the config that is running now carries the guard everywhere (see install.ts): a dev
+    // reload swaps the config, and a later plugin can add collections or replace the hooks that would have done it.
     const queryGuard = guardParentQueries(opts)
-    // The guard also makes sure the late install has happened for the config that is running now: a dev reload swaps
-    // the config, and a later plugin can replace the database adapter or the init that would have done it.
-    const installedFor = new WeakSet<object>()
-    const guard = (async (a: Parameters<CollectionBeforeOperationHook>[0]) => {
+    const guard: CollectionBeforeOperationHook = mark((async (a: Parameters<CollectionBeforeOperationHook>[0]) => {
       const payload = ((a.args as { req?: { payload?: Payload } } | undefined)?.req ?? a.req)?.payload
-      if (payload && !installedFor.has(payload.config)) installLate(payload)
+      if (payload) checkpoint(payload, opts, guard)
       return queryGuard(a)
-    }) as CollectionBeforeOperationHook
-    // A collection that no hook of this plugin reaches (one a later plugin added, when the adapter was replaced and
-    // onInit is off) can still reach a parent field by filtering through a relationship, and Payload then asks the
-    // collection that holds the parent field whether the requester may read it. That answer is also the last place to
-    // notice an install that never happened: it installs now and refuses this one operation, with the guard's own
-    // message, so the first query can't be answered unguarded. Once installed it only passes the host's answer on.
-    const tripwire = (c: CollectionConfig): CollectionConfig => {
+    }) as CollectionBeforeOperationHook, 'guard', opts)
+    // A collection that no hook of this plugin reaches (one a later plugin added, before anything installed the guard)
+    // can still reach a parent field by filtering through a relationship. Payload then asks the collection that holds
+    // the parent field, and each field on the way, whether the requester may read it. Those answers are trip points:
+    // while the running config isn't recorded as guarded they guard it now and refuse this one operation, with the
+    // guard's own message, so that query can't be answered unguarded. Once guarded they pass the host's answer on.
+    // The field ones stay when a later plugin replaces the collection's read access.
+    const trip = async (req: { payload?: Payload } | undefined): Promise<void> => {
+      const payload = req?.payload
+      if (!payload) throw refused()
+      if (isGuarded(payload.config, opts)) return
+      checkpoint(payload, opts, guard)
+      throw refused()
+    }
+    const tripCollection = (c: CollectionConfig): CollectionConfig => {
       const read = c.access?.read
-      if (c.slug !== opts.collection && c.slug !== opts.cohorts?.collection) return c
       const wrapped = async (a: Parameters<Access>[0]) => {
-        const payload = a.req?.payload
-        if (!payload) throw refused()
-        if (!installedFor.has(payload.config)) {
-          installLate(payload)
-          throw refused()
-        }
+        await trip(a.req)
         return typeof read === 'function' ? read(a) : read ?? Boolean(a.req.user)
       }
       return { ...c, access: { ...c.access, read: wrapped as Access } }
     }
+    const tripField = (f: Field): Field => {
+      const read = (f as { access?: { read?: FieldAccess } }).access?.read
+      const wrapped: FieldAccess = async (a) => {
+        await trip(a.req)
+        return read ? read(a) : true
+      }
+      return { ...f, access: { ...(f as { access?: object }).access, read: wrapped } } as Field
+    }
+    const tripFields = (slug: string, fields: Field[]): Field[] => guardedPaths(opts, slug).reduce((fs, p) => mapFieldAt(fs, p.split('.'), tripField), fields)
     if (!opts.disabled) {
-      collections = collections.map((c): CollectionConfig => tripwire({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
+      collections = collections.map((c): CollectionConfig => {
+        const withGuard = { ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }
+        if (c.slug !== opts.collection && c.slug !== opts.cohorts?.collection) return withGuard
+        return tripCollection({ ...withGuard, fields: tripFields(c.slug, withGuard.fields) })
+      })
     }
 
     const globals = (config.globals ?? []).map((g) => (opts.disabled ? g : guardGlobalVersions(g, opts)))
@@ -197,80 +216,37 @@ export const onePedigree =
       globals.push(graphGlobal(opts))
       if (opts.admin?.settings !== false && !globals.some((g) => g.slug === opts.settingsGlobal)) globals.push(settingsGlobal(opts))
     }
-    // A collection or global added by a plugin that runs after this one isn't in the lists above. Hooks and access
-    // functions are read from the final config on each operation, so they get the guard here, once they exist. This
-    // runs when the database adapter starts, which is before onInit and also happens when Payload is started with
-    // `disableOnInit` (its own CLI scripts do), and again in onInit for anything added after that.
-    const installLate = (payload: Payload) => {
-      if (opts.disabled) return
-      const finalCollections = [...(payload.config.collections ?? []), ...Object.values(payload.collections ?? {}).map((c) => c.config)]
-      for (const c of new Set(finalCollections)) {
-        try {
-          const hooks = (c.hooks ??= {} as never) as { beforeOperation?: unknown[] }
-          const list = (hooks.beforeOperation ??= [])
-          if (!list.includes(guard)) list.push(guard)
-        } catch {
-          // Not changeable: the collection would answer without the guard, so nothing starts or answers.
-        }
-        if (!((c.hooks?.beforeOperation ?? []) as unknown[]).includes(guard)) throw new Error(`OnePedigree: could not guard collection "${c.slug}", so Payload won't start or answer queries without the guard. Add the collection before this plugin, or make its hooks changeable.`)
-      }
-      for (const g of new Set([...(payload.config.globals ?? []), ...(payload.globals?.config ?? [])])) {
-        try {
-          guardGlobalVersions(g, opts, true)
-        } catch {
-          // Checked below.
-        }
-        if (!globalVersionsGuarded(g)) throw new Error(`OnePedigree: could not guard the versions of global "${g.slug}", so Payload won't start or answer queries without the guard.`)
-      }
-      // A later plugin can drop or replace the individuals or cohorts collection, taking this plugin's redaction with it.
-      const own: [string, unknown][] = [[opts.collection, individualsAfterRead], ...(opts.cohorts ? [[opts.cohorts.collection, cohortsAfterRead] as [string, unknown]] : [])]
-      for (const [slug, hook] of own) {
-        const found = finalCollections.filter((c) => c.slug === slug)
-        if (!found.length || found.some((c) => !((c.hooks?.afterRead ?? []) as unknown[]).includes(hook)))
-          throw new Error(`OnePedigree: collection "${slug}" is missing or was replaced by a later plugin, so its parents can't be kept private. Payload won't start or answer queries until it carries this plugin's hooks.`)
-      }
-      assertResolverGuards(payload, opts)
-      installedFor.add(payload.config)
-    }
+    // A collection or global added by a plugin that runs after this one isn't in the lists above; `checkpoint` puts the
+    // guard on it in the running config. The start points below run it before Payload answers anything in every start
+    // mode a later plugin leaves them in, and the first one wraps the database adapter object, which Payload keeps
+    // across a dev reload, so a reload is checked too. A throw refuses the start.
     const host = config.db as { init?: (args: { payload: Payload }) => unknown } | undefined
-    // `init` of the factory runs once at start. Payload's dev reload calls `init` on the adapter it made, so that one is wrapped too.
     const db =
       !opts.disabled && host && typeof host.init === 'function'
         ? {
             ...host,
             init: (args: { payload: Payload }) => {
-              installLate(args.payload)
-              const adapter = host.init!(args) as { init?: (...a: unknown[]) => unknown; payload?: Payload } | undefined
-              if (adapter && typeof adapter.init === 'function') {
-                const own = adapter.init
-                adapter.init = function (this: unknown, ...rest: unknown[]) {
-                  const payload = adapter.payload ?? args.payload
-                  installLate(payload)
-                  return own.apply(this, rest)
-                }
-              }
+              ensureGuarded(args.payload, opts, guard)
+              const adapter = host.init!(args)
+              anchorAdapter(args.payload, adapter, opts, guard)
               return adapter
             },
           }
         : host
     // Payload calls the key-value store's `init` on every start, right after the adapter's, also when a later plugin
-    // replaced the adapter and `onInit` is off, so the install runs there too, before anything is answered. A throw
-    // refuses the start. With no store set by the host this is the one Payload would add itself, with its collection.
+    // replaced the adapter and `onInit` is off. With no store set by the host this is the one Payload would add itself,
+    // with its collection. A proxy, so a store that keeps members on its prototype or in private fields keeps them.
     const hostKv: KVAdapterResult = config.kv ?? databaseKVAdapter()
-    const kv: KVAdapterResult | undefined = opts.disabled
-      ? config.kv
-      : {
-          ...hostKv,
-          init: (args) => {
-            installLate(args.payload)
-            return hostKv.init(args)
-          },
-        }
-    // Payload loads the email adapter on every start after connecting, so a host's adapter is a second install point,
-    // for when a later plugin replaced the store as well. With none set, Payload's own console adapter stays.
+    const kvInit: KVAdapterResult['init'] = (args) => {
+      checkpoint(args.payload, opts, guard)
+      return hostKv.init(args)
+    }
+    const kv: KVAdapterResult | undefined = opts.disabled ? config.kv : new Proxy(hostKv, { get: (t, k) => (k === 'init' ? kvInit : Reflect.get(t, k, t)) })
+    // Payload loads the email adapter on every start after connecting, so a host's adapter is another start point.
+    // With none set, Payload's own console adapter stays.
     const hostEmail = config.email
     const withInstall = (adapter: EmailAdapter): EmailAdapter => (args) => {
-      installLate(args.payload)
+      checkpoint(args.payload, opts, guard)
       return adapter(args)
     }
     const email: Config['email'] =
@@ -280,7 +256,7 @@ export const onePedigree =
     const onInit: Config['onInit'] = async (payload) => {
       await config.onInit?.(payload)
       if (opts.disabled) return
-      installLate(payload)
+      checkpoint(payload, opts, guard)
       // Retried: on a fresh database this can race other startup writes creating the same
       // MongoDB collection (a transient transaction error). Startup is never blocked by it.
       for (let attempt = 1; attempt <= 5; attempt++)

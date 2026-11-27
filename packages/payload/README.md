@@ -88,16 +88,19 @@ that is neither Payload's nested `contains` (which is checked against the relate
 `{ relationTo, value }` reference. Only paths that follow relationship fields are followed, so a host that stores a
 parent ID in a plain text or JSON field has to guard that itself.
 
-Collections and globals that a plugin adds after this one get the guard when the database adapter starts, again in
-`onInit`, again after Payload's dev reload, and on the first operation on any collection that already has it. If the
-guard can't be put on one (for example its hook list is frozen), Payload refuses to start, or the operation is refused.
+Collections and globals that a plugin adds after this one get the guard too. Whether the config Payload is running
+carries the guard is checked when a query runs, and recorded against that config object, so it holds after Payload's
+dev reload swaps in a config built by a fresh run of every plugin. The plugin also wraps the database adapter object,
+which Payload keeps across a reload: a query that reaches it while the running config hasn't been checked is refused.
+If the guard can't be put on a collection or global (for example its hook list is frozen), Payload refuses to start,
+or every query is refused until restart.
 A startup check also resolves each parent path and refuses to start if Payload's resolver doesn't hand back the guarded
 field, as a Payload version that returned copies would.
 
 The individuals collection and the cohorts collection have to be in the config before this plugin runs. A cohorts
 collection that only a later plugin adds would miss the hooks that keep a hidden birth parent private, so the plugin
-throws when it can't find it. At start, it also refuses if a later plugin dropped either collection or replaced it
-with a copy that lacks this plugin's hooks.
+throws when it can't find it. It also refuses, at start and after a reload, if a later plugin dropped either collection
+or replaced it with a copy that lacks this plugin's hooks. After a reload that refusal covers every query until restart.
 
 Payload starts the key-value store (`kv` in the config) on every start, right after the database adapter, and also
 when a later plugin replaced the adapter and Payload starts with `onInit` off. The plugin wraps that store's start,
@@ -108,12 +111,13 @@ wrapped the same way, as a second chance.
 
 One case is left. If a later plugin replaces the database adapter and the store with ones that don't call this
 plugin's, no email adapter is set, and Payload starts with `onInit` off, none of this plugin runs at start. The guard
-and the checks then run on the first operation on a collection this plugin guards. A filter or sort from a late
-collection that reaches into the individuals or cohorts collection, coming first, installs the guard and is refused
-once, and so is the first Admin panel request for the signed-in user's permissions (it works when retried). In that
-case a later plugin that also replaced the individuals or cohorts collection, or their read access, can leak a hidden
-parent until the first guarded operation runs. Don't replace the database adapter, the store or those two collections
-in a plugin that runs after this one.
+then installs on the first query that touches a collection this plugin guards, or a parent field of the individuals or
+cohorts collection (their field read access is a trip point, and Payload checks it for every query that reaches them).
+That first query is refused once, and so is the first Admin panel request for the signed-in user's permissions (it
+works when retried). If that later plugin also replaced the individuals or cohorts collection wholesale, its hooks and
+access included, a query from a late collection that only reaches into it runs no code of this plugin and can tell a hidden
+parent from a made-up one. Don't replace the database adapter, the store or those two collections in a plugin that
+runs after this one.
 
 The plugin can't judge hooks other code adds. A later `afterRead` hook on the individuals or cohorts collection
 that reads the record again with `overrideAccess: true` and returns it gives back the hidden parent the plugin
