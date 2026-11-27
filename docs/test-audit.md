@@ -2,6 +2,14 @@
 
 Each audit lists what this repo promises, the tests that prove it, and the gaps: those closed in the same pass and those left, with why. Audits run after each feature or fix, and at least every 14 days while the repo has commits. Newest first.
 
+## 2026-11-26: hidden-parents resolver
+
+- Promises: with access control on, a requester who can't read a parent gets the same answer for its ID and for a made-up ID on every filter, sort, distinct, join and version read; a requester who can read it still gets real answers; the guard covers collections, globals, plugin-added entities and internal collections.
+- Covered: `hidden-parent-differential-{omit,placeholder}` (169 rows from the review probes r3 to r7, the `below` rows, exists rows, sort and distinct, readable-parent answers), `differential-standard-*` (standard-fields install, `__` spellings), `resolver-shape` (Payload's resolver shape), `guard-installed` (every entity kind by behavior), `guard-noinit`, `guard-limits`, and `scripts/mutants.mjs` (35 mutants, all killed).
+- Gaps added: sort and distinct had no rows, so deleting the sort check survived; `below` paths with a readable ID; a plain `-name` sort; an unknown join name; a hidden field; a global reached through another collection and one a later plugin adds.
+- Base-probe cases: B, C, E, G and A.validate are intended (relabeled outputs are equal); R3.cycle is a deliberate trade-off, pinned by `loop-message-*`. Older entries that quote the previous loop message are historical.
+- Gaps skipped (and why): the 100-segment limit (the hop limit refuses the same keys first); `onInit` as a second install point (the database start already installs and nothing separates the two); a real Next.js route handler and a database other than MongoDB (no harness here).
+
 ## 2026-11-22: CORE_VERSION and the new app identifier
 
 - Promises: the core exports `CORE_VERSION`, equal to its package version, so a host can record which method version made a result; the Mac app's identifier is `com.extantape.onepedigree`, and the changelog says plainly that settings and permissions reset once while files are untouched.
@@ -299,3 +307,78 @@ Scope: every package and the desktop app, with the Payload plugin's access rules
 
 - Payload's own internals, such as relationship validation and admin rendering.
 - The playground app, which is a demo.
+
+## 2026-11-26: hidden records in the parentage and cohort checks
+
+Promises: the parentage check and the cohort check give the same answer with or without a record the requester cannot read; a hidden birthing parent never shows in a cohort read or filter; each write carries its own access mode.
+
+Covered (`packages/payload/test/hidden-parent-oracle.test.ts`, `operation-isolation.test.ts`), each run both ways, with the refusals that must stay:
+- A hidden birthing parent, a made-up ID, a hidden or missing cohort and hidden members all give the same reply. A visible conflict and trusted server code are still refused.
+- A host hook that writes with access overridden on the same request, on individuals and on cohorts, does not turn the checks off for the outer write.
+- A cohort's hidden birthing parent shows as a placeholder on single and list reads, is kept when an editor saves the cohort, can't be replaced, and can't be probed with a filter.
+
+Accepted and documented (README): the loop check walks descendants with full access but reports only through readable parents; the restrict-mode 409 on deleting a recorded parent does not depend on whether children are readable.
+
+Skipped: live REST and GraphQL requests for the cohort redaction (the Local API path runs the same hook; the individuals' redaction is covered over both).
+
+### 2026-11-26 round 4: queries from other collections, other paths and joins
+
+Promise: a hidden parent can't be probed through queries.
+
+Covered (`packages/payload/test/hidden-parent-queries.shared.ts`, run in `omit` and `placeholder` modes), each with hidden vs made-up IDs giving the same answer:
+- A collection other than the individuals and cohorts filtering or sorting by `animal.dam`, `animal.sire`, `animal.clutch.mother`, and counting by them (REST); `animal.dam.name` refused even with a readable ID.
+- `mate.dam`, a parent field reached through a relationship that is not a parent field.
+- REST and Local API joins: `joins[members][where][dam]`, `joins[kids][where][sire]` and join sorts; GraphQL join filter and a GraphQL filter through another collection.
+- The operator allow-list: `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `like`, `contains` and `all` are refused on a parent field with a readable ID, on three collections.
+- Readable parents still work, and so do ordinary fields and sorts.
+Mutants (guard code changed one way at a time) that the suite kills: no `version.` stripping, no `below` check, no count, no distinct, no sort, `exists` always allowed, no update or delete, other operators allowed, no ID check, no relationship walk, no joins, no join sort, no join where, no join field map. One survives on purpose: dropping the explicit cohort path, because the relationship walk reaches it anyway.
+
+Still not covered: a real Next.js GraphQL handler, a parent ID held in a plain text or JSON field (the guard follows relationship and join fields only), and block or array fields holding relationships beyond the dotted-path walk's reach. The README says so.
+
+### 2026-11-26 round 5: long paths, later plugins, odd operands
+
+Covered (same shared file, both modes): paths of 8, 9 and 12 hops on find, count, sort and Local find; a collection added by a plugin after OnePedigree (filter, count, sort); object operands without an ID in `in`, `equals` and `not_in`, and a 1001-item Local list ending in one; `exists` on the individuals, cohorts, a related collection and a later one (mutant "exists always allowed" is now killed by two tests). Mutants killed: depth limit returns null, empty-operand check removed, late guard removed, `exists` always allowed.
+
+Not covered: a database other than MongoDB, and a real Next.js handler.
+
+### 2026-11-26 round 6: double underscore paths
+
+Promise: a hidden parent can't be probed through a `__` spelling of a path.
+
+Covered (`hidden-parent-queries.shared.ts` and `hidden-parent-underscore-standard.shared.ts`, both modes), hidden vs made-up IDs giving the same answer: `__` in REST filters, counts and sorts (role fields, other collections, a later plugin's collection, mixed `.` and `__`); versions, REST join filters and sorts, bulk PATCH and DELETE; Local find, count, countVersions, update, delete, joins and distinct; GraphQL filters, count, sort; `exists` through `__` only with placeholders; on a standard-fields install, `parentage__parents__individual`, `parentage__mother` over REST, count, sort, versions, bulk, Local and GraphQL; a placeholder-shaped operand with extra keys. Readable IDs and ordinary `__` fields still work.
+
+Not covered: a real Next.js handler, and a database other than MongoDB.
+
+### 2026-11-26 round 7: nested filters on relationships
+
+Covered (`hidden-parent-queries.shared.ts`, both modes), hidden vs made-up IDs giving the same answer: `herd[contains][dam|sire|clutch.mother|mate.dam][equals]` on find, count, versions (`version.herd`), bulk PATCH, `or`/`and` nesting, `in`, `not_equals`, and `exists` (only with placeholders); Local find, count, countVersions and update; readable IDs and ordinary inner fields still work; a join filter on a parent field is still refused.
+
+Not covered: a real Next.js handler, and a database other than MongoDB.
+
+## 2026-11-27: first query on a late collection
+
+Promise: when a later plugin replaces the database adapter and `onInit` is off, a query on a collection that plugin added can't tell a hidden parent from a made-up id, even as the first operation of the process.
+
+Covered: `guard-late-install-first-query-{find,count,sort,distinct}.test.ts` (one start each, seeded through the adapter so no guard hook has run; asserts the guard is absent before, the hidden and made-up answers are identical and are a refusal, and the guard is present after). All four failed on a9b7b69 and pass now. The full payload package suite passes (224 tests).
+
+Gaps skipped (and why): a late global's versions and a join from a late collection as the first operation (the same trip point, not exercised; each needs its own start); the admin permissions request before install (refused once, by design).
+
+## 2026-11-27: configured collections and refusal clean-up
+
+Promise: a hidden birth parent is never read out of a cohorts collection that a later plugin added, dropped or replaced; the plugin refuses instead. Refusal tests leave no temp folders behind.
+
+Covered: `guard-configured-collections.test.ts`: a missing cohorts collection throws at config time; a later plugin adding it is refused in a normal start and with the adapter replaced and `onInit` off; a later plugin dropping it, or replacing the cohorts or individuals collection, is refused at start; in the replaced-adapter start, a replaced cohorts collection makes the first guarded operation (and the next) refuse; `assertResolverGuards` throws for each configured slug that isn't running. The round 1 `late-cohorts` probe now gets a refused start. `differential.fixture.ts` removes its uploads folder when the start throws, so `guard-late-install-locked` and `guard-resolver-copy` no longer leave one; checked by comparing the temp folder before and after two full runs.
+
+Gaps skipped (and why): a read of a replaced individuals or cohorts collection as the very first operation in the replaced-adapter start (no plugin code runs there, so there is nothing to test; the README states the limit); the Admin permissions request refused once in that start mode (by design, stated in the README, not exercised through the Admin panel).
+
+Round 2 (key-value store as install point): `guard-late-install-kv.test.ts`, with the adapter replaced and `onInit` off: a later plugin that overwrites the individuals' read access and adds a collection gets the same refusal for a hidden and a made-up id, twice; a replaced cohorts or individuals collection and a frozen late collection refuse the start; with no store set, Payload's default store, its `payload-kv` collection and the guard on it are there at start and it reads and writes; a host's in-memory store works and still refuses a replaced collection; with a later plugin replacing the store too, the host's email adapter refuses the start; a late collection has the guard before the first operation, and that query gets the same answer for a hidden and a made-up id. All seven failed on 9e7ea53. The `first-query` tests and the replaced-collection case in `guard-configured-collections.test.ts` now replace the store as well, so the first-operation fallback stays covered for the case that's left. `helpers.ts` now gives each start its own getPayload key, because a second start in one file got the first, stopped instance back.
+
+Gaps skipped (and why): a later plugin that replaces the adapter and the store, with no email adapter and `onInit` off (no plugin code runs there, so there is nothing to test; the README states the limit); the Admin permissions request refused once in that case (stated in the README, not exercised through the Admin panel). `guard-late-install-fails-after-start` failed once under load in review; the cause wasn't clear from the code, so it's unchanged. A later `afterRead` hook that reads the record again with `overrideAccess: true` (round 2 `hook-append` probe) still shows the hidden parent: that is host code that bypasses access on purpose, so it's stated in the README as the host's to avoid, not tested.
+
+## 2026-11-27: guard checked against the running config
+
+Promise: the guard holds for whatever config Payload is running, including one a dev reload builds by running every plugin again, and a query on a config that hasn't been checked is refused. A host's key-value store keeps its own members.
+
+Covered: `guard-live-config.test.ts`, which rebuilds the plugin with `buildConfig` before each `reload()`: a normal start reloads without error, the late collection has the guard again, a hidden and a made-up id get the same refusal and a hidden dam reads as null, before and after; the same with the adapter replaced and `onInit` on, and with an `onInit` that doesn't chain; with the adapter and store replaced, `onInit` off and the individuals' read access overwritten, the field trip point refuses the first filter alike for both ids, before and after a reload; a reload whose new config lost the redaction throws, and every query after it is refused, overrides included; a config put in place without any start hook is refused at the adapter, and is guarded after that; a store given as a class instance keeps its prototype getter, its private state and one `init` call. A limit test pins the case the README states. Six of the eight failed on 9329bba (the lost-redaction case and the limit pass on both). Every earlier security test is unchanged and passes.
+
+Gaps skipped (and why): a later plugin that replaces the adapter and the store and overwrites the read access of the individuals or cohorts collection, field read access included, with no email adapter and `onInit` off (no plugin code runs there; the limit test pins it by replacing the individuals collection wholesale, a review probe showed that overwriting the read access alone is enough, and the README states it); a reload through a real Next.js dev server (the tests call Payload's `reload()` the way it does); a database other than MongoDB.

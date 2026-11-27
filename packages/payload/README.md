@@ -64,12 +64,84 @@ A cohort is one birthing event (a clutch, a litter, twins): one mother, fathers 
 member. With `cohorts.birthParentField` (the cohort's field naming the mother), a member whose
 recorded mother differs is refused, and so is changing the cohort's mother while members disagree.
 
+These checks use only what the requester can read, so their answers are the same with or without
+a hidden record: a mother, birthing parent, cohort or member the requester can't read is left out
+of the comparison. The cost is that an editor can save a mother that differs from a hidden
+birthing parent, or set a birthing parent that a hidden member contradicts. Server code with
+access overridden is checked against everything. A hidden birthing parent comes back from plain
+cohort reads as `{ "private": true }` (null in GraphQL, or with `hiddenRecords: 'omit'`), is kept
+as stored when an editor saves the cohort, and a hidden birthing parent can't be probed through queries.
+With access control on, sorting by a parent field (the cohort's birthing parent, `dam`, `sire`), listing its
+distinct values and filtering below it (`dam.name`) are refused with a 400. `equals`, `in`, `not_equals` and `not_in`
+work only with IDs the requester can read, so a hidden ID and a made-up one get the same answer. `exists` works only
+with `hiddenRecords: 'placeholder'`.
+
+The guard asks Payload's own path resolver what each filter key means, so `dam`, `lherd.en`, `animal__dam` and
+`version.animal.dam` are the same field to the guard that they are to the database. In a standard-fields install, every
+field in a `parents` row counts as a parent field (the row's `role` and `id` too), because they show that a hidden
+parent exists. Filtering or sorting on them is refused with access control on, and `exists` works only with
+`hiddenRecords: 'placeholder'`. The guard runs on every collection in the host, including Payload's own, on find, count,
+versions, count of versions, distinct values, bulk update and delete, REST and Local joins, and GraphQL. A key that
+doesn't resolve is refused. So is a
+path of more than eight relationship hops, a where nested deeper than 32 levels, and an object under a relationship
+that is neither Payload's nested `contains` (which is checked against the related collection) nor a plain
+`{ relationTo, value }` reference. Only paths that follow relationship fields are followed, so a host that stores a
+parent ID in a plain text or JSON field has to guard that itself.
+
+Collections and globals that a plugin adds after this one get the guard too. Whether the config Payload is running
+carries the guard is checked when a query runs, and recorded against that config object, so it holds after Payload's
+dev reload swaps in a config built by a fresh run of every plugin. The plugin also wraps the database adapter object,
+which Payload keeps across a reload: a query that reaches it while the running config hasn't been checked is refused.
+If the guard can't be put on a collection or global (for example its hook list is frozen), Payload refuses to start,
+or every query is refused until restart.
+A startup check also resolves each parent path and refuses to start if Payload's resolver doesn't hand back the guarded
+field, as a Payload version that returned copies would.
+
+The individuals collection and the cohorts collection have to be in the config before this plugin runs. A cohorts
+collection that only a later plugin adds would miss the hooks that keep a hidden birth parent private, so the plugin
+throws when it can't find it. It also refuses, at start and after a reload, if a later plugin dropped either collection
+or replaced it with a copy that lacks this plugin's hooks. After a reload that refusal covers every query until restart.
+
+Payload starts the key-value store (`kv` in the config) on every start, right after the database adapter, and also
+when a later plugin replaced the adapter and Payload starts with `onInit` off. The plugin wraps that store's start,
+so the guard and these checks always run before Payload answers anything, and a failed check stops the start. If you
+set no store, the plugin passes on the one Payload would add by default, with its hidden `payload-kv` collection, so
+nothing changes. A store you set yourself is wrapped and keeps working. If you set an email adapter, its start is
+wrapped the same way, as a second chance.
+
+One case is left. If a later plugin replaces the database adapter and the store with ones that don't call this
+plugin's, no email adapter is set, and Payload starts with `onInit` off, none of this plugin runs at start. The guard
+then installs on the first query that touches a collection this plugin guards, or a parent field of the individuals or
+cohorts collection (their field read access is a trip point, and Payload checks it for every query that reaches them).
+That first query is refused once, and so is the first Admin panel request for the signed-in user's permissions (it
+works when retried). If that later plugin also overwrote the read access of the individuals or cohorts collection, both
+the collection's own and its parent fields' `access.read`, a query from a late collection that only reaches into it runs
+no code of this plugin and can tell a hidden parent from a made-up one. The collection's hooks can all still be in place;
+replacing the whole collection does the same. In a plugin that runs after this one, don't replace the database adapter
+or the store, and don't replace those two collections or their read access, field read access included.
+
+The plugin can't judge hooks other code adds. A later `afterRead` hook on the individuals or cohorts collection
+that reads the record again with `overrideAccess: true` and returns it gives back the hidden parent the plugin
+removed. Keep added read hooks on those collections on the reader's access.
+
+Versions of a global can't be filtered through a hook, because Payload doesn't run one for them. Instead, a global that
+refers to individuals (directly, or through relationship, upload or join fields) answers its version reads with
+`false` for a requester who can't read every individual. Those requesters lose the version history of such a global,
+in the Admin UI too. A host that needs partial readers to see it can read the versions in its own server code and shape
+the answer. Globals with no such reference keep the host's own `readVersions` rule. This needs Payload 3.92 (the peer
+range is `~3.92.1`), because the guard depends on the shape of its resolver; the range widens one minor at a time.
+
+Saving a cohort with a birthing parent the editor can't read is refused.
+
 ## Integrity
 
 On every write (Admin, REST, GraphQL, Local API, imports):
 
 - self-parents, duplicated parents and **cycles** are rejected with field-addressable errors;
-  the cycle check walks the full stored descendant line;
+  the cycle check walks the full stored descendant line, including records the editor can't read. If
+  the line runs through one, the refusal says so in the same words as any other loop ("Some of that line
+  may belong to records you can't see") and shows no id, name or count. This is a deliberate trade-off:
+  skipping hidden records would let a real loop be saved;
 - a parent the editor **cannot read** is rejected, with the same message as a missing one;
 - host `rules` (e.g. taxonomy) run on the proposed record;
 - parentage changes are **serialized**: each updates a graph-revision global in the same
@@ -98,6 +170,12 @@ The same holds for plain collection reads (REST, GraphQL, the Admin, and the Loc
 `overrideAccess: false`), single or list, at any depth. A parent the reader can't read comes back as
 `{ "private": true }` with `hiddenRecords: 'placeholder'`, or is left out with `'omit'`. GraphQL
 returns `null` for it. Trusted Local API reads (the default `overrideAccess: true`) are unchanged.
+
+Two answers still depend on records the requester can't read, and are accepted: the loop check
+walks every descendant with full access (it only reports a loop through a parent the requester
+can read, so a hidden record never shows in its message), and with `onReferencedIndividualDelete:
+'restrict'`, deleting a recorded parent is refused with a 409 whether or not the children can be
+read. The deleter needs delete access, and the alternative is a delete that orphans hidden records.
 When someone saves a record that showed them a private parent, that parent is kept as stored: a
 placeholder, an empty picker or a missing row means "unchanged", and replacing it with another
 parent is refused. The kept parent also passes the parent field's validation, which would

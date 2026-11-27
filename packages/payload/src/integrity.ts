@@ -15,11 +15,12 @@ import {
   type CollectionBeforeOperationHook,
   type CollectionSlug,
   type GlobalSlug,
+  isolateObjectProperty,
   type PayloadRequest,
 } from 'payload'
 
 import { childrenWhere, getAt, graphSelect, idOf, maternalRoles, readCohort, readMode, readParents, toIndividual } from './mapping.js'
-import { withStoredParents } from './privacy.js'
+import { readableIds, withStoredParents } from './privacy.js'
 import { childReq } from './request.js'
 import type { ResolvedOptions } from './types.js'
 
@@ -28,6 +29,9 @@ export const SKIP = 'onepedigreeInternal'
 /** Set per operation: whether access control is bypassed (trusted server code), so parent readability is not checked. */
 export const TRUSTED = 'onepedigreeOverrideAccess'
 const MAX_DESCENDANTS = 100_000
+
+/** The same words whether or not the line runs through records the editor can't read. */
+export const LOOP_MESSAGE = 'This animal can’t be a parent here, because it already descends from this animal in the family line. Some of that line may belong to records you can’t see.'
 
 const err = (code: string, message: string, path?: string, relatedIds?: string[]): PedigreeIssue => ({
   severity: 'error',
@@ -100,7 +104,7 @@ export async function checkParentage(
         const c = String(d.id)
         if (reached.has(c)) continue
         reached.add(c)
-        if (proposed.has(c)) issues.push(err('PARENT_IS_DESCENDANT', 'This parent already descends from the individual; the pedigree would loop.', path, [c]))
+        if (proposed.has(c)) issues.push(err('PARENT_IS_DESCENDANT', LOOP_MESSAGE, path, [c]))
         frontier.push(c)
       }
       if (reached.size > MAX_DESCENDANTS) {
@@ -110,19 +114,24 @@ export async function checkParentage(
     }
   }
 
-  // A cohort is one birthing event: the member's recorded mother must be the cohort's birthing parent.
+  // A cohort is one birthing event: the member's recorded mother must be the cohort's birthing parent. For a requester
+  // with access control on, only what they can read takes part: an unreadable cohort, birthing parent or mother is
+  // skipped, so the answer is the same whether or not a hidden record exists (nothing here is an oracle for IDs).
   if (proposal.cohort && opts.cohorts?.birthParentField) {
     const cohort = await req.payload.findByID({
       collection: opts.cohorts.collection as CollectionSlug,
       id: proposal.cohort,
       depth: 0,
-      overrideAccess: true,
+      overrideAccess: trusted,
       disableErrors: true,
-      req,
+      req: childReq(req),
     })
-    const birthParent = idOf(cohort ? getAt(cohort, opts.cohorts.birthParentField) : null)
+    let birthParent = idOf(cohort ? getAt(cohort, opts.cohorts.birthParentField) : null)
+    if (birthParent && !trusted && !(await readableIds(req, opts, [birthParent])).has(birthParent)) birthParent = null
     // The birthing mother: a foster dam is a social link, not the cohort's birthing parent.
-    const mothers = biologicalParents(proposal).filter((p) => p.role && maternalRoles(opts).includes(p.role)).map((p) => p.individual)
+    const mothers = biologicalParents(proposal)
+      .filter((p) => p.role && maternalRoles(opts).includes(p.role) && seen.has(p.individual))
+      .map((p) => p.individual)
     if (birthParent && mothers.some((m) => m !== birthParent))
       issues.push(err('COHORT_BIRTH_PARENT_MISMATCH', 'This mother differs from the mother of the selected birthing event (cohort).', opts.fields.parentage.cohort ?? path))
   }
@@ -188,10 +197,16 @@ export const parentageBeforeChange =
  * Records whether this create/update bypasses access control, for the readability check. Only an explicit `true`
  * does (the Local API's default): REST, GraphQL and the Admin leave it unset, and Payload then enforces access.
  */
-export const rememberAccessMode: CollectionBeforeOperationHook = ({ args, operation, context }) => {
-  if (operation === 'create' || operation === 'update' || operation === 'updateByID')
-    context[TRUSTED] = (args as { overrideAccess?: boolean }).overrideAccess === true
-  return args
+export const rememberAccessMode: CollectionBeforeOperationHook = ({ args, operation }) => {
+  if (operation !== 'create' && operation !== 'update' && operation !== 'updateByID') return args
+  const a = args as { overrideAccess?: boolean; req?: PayloadRequest }
+  // The flag belongs to this operation. Payload merges a nested call's context into the request it is handed, so a
+  // host hook that writes with access overridden on this request would otherwise switch the checks off for the
+  // outer write. This operation gets its own request (same user and transaction), and its hooks read the flag there.
+  if (!a.req) return args
+  const req = isolateObjectProperty(a.req, ['context'])
+  req.context = { ...a.req.context, [TRUSTED]: a.overrideAccess === true }
+  return { ...args, req }
 }
 
 /** Deleting a recorded parent: refuse (archive instead) or remove the references, per the plugin option. */
@@ -241,14 +256,17 @@ export const cohortBirthParentBeforeChange =
     if (!field || operation !== 'update' || context[SKIP]) return data
     const next = idOf(getAt({ ...originalDoc, ...data }, field))
     if (!next || next === idOf(getAt(originalDoc, field))) return data
+    // With access control on, only members the requester can read count, and a hidden mother is already left out of
+    // what they read. A conflict among hidden members then cannot show in the answer (same reply with or without one).
+    const trusted = context[TRUSTED] === true
     const { docs } = await req.payload.find({
       collection: opts.collection as CollectionSlug,
       where: { [opts.fields.parentage.cohort!]: { equals: originalDoc!.id } },
       depth: 0,
       pagination: false,
       select: graphSelect(opts) as never,
-      overrideAccess: true,
-      req,
+      overrideAccess: trusted,
+      req: childReq(req),
     })
     const conflicting = (docs as unknown as Record<string, unknown>[]).filter((d) =>
       biologicalParents({ parents: readParents(d, opts) }).some((p) => p.role && maternalRoles(opts).includes(p.role) && p.individual !== next),

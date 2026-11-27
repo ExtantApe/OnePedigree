@@ -5,7 +5,7 @@ import { onePedigree, withStoredParents } from '../src'
 import { startPayload, usersCollection } from './helpers'
 
 /**
- * The plugin's own flags never stay on the caller's request (Garfunkel bottle 186, 2026-11-25). Payload merges a
+ * The plugin's own flags never stay on the caller's request (2026-11-25). Payload merges a
  * nested call's `context` into the req it is given and leaves it there, and runs a bulk update's docs in parallel
  * on one req. A skip flag, the trusted flag or the raw-parents counter left on that req made sibling writes skip
  * the parentage checks and sibling reads skip redaction. Each test below failed before nested calls got a child req.

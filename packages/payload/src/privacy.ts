@@ -1,8 +1,9 @@
-import { validations, ValidationError, type CollectionAfterReadHook, type CollectionBeforeValidateHook, type CollectionSlug, type PayloadRequest, type Where } from 'payload'
+import { APIError, validations, ValidationError, type CollectionAfterReadHook, type CollectionBeforeOperationHook, type CollectionBeforeValidateHook, type CollectionSlug, type PayloadRequest, type Where } from 'payload'
 
 import { isBiologicalKind } from '@extantape/onepedigree-core'
 
 import { getAt, idOf } from './mapping.js'
+import { fieldSetsFor, resolveKey, strongestHit, Unresolved } from './parentPaths.js'
 import { childReq } from './request.js'
 import type { ResolvedOptions } from './types.js'
 
@@ -216,4 +217,192 @@ export const keepHiddenParents =
     for (const o of originals) if (!used.has(o)) rows.push({ ...o, [m.individualField]: idOf(o[m.individualField]) })
     setAt(d, `${m.path}.parents`, rows)
     return d
+  }
+
+/**
+ * A cohort's birthing parent the reader may not read comes back as `{ private: true }` (or null with
+ * `hiddenRecords: 'omit'` and in GraphQL), like a hidden parent on an individual. Trusted reads are unchanged.
+ */
+export const birthParentAfterRead =
+  (opts: ResolvedOptions): CollectionAfterReadHook =>
+  async ({ doc, req, overrideAccess }) => {
+    const field = opts.cohorts?.birthParentField
+    if (!field || overrideAccess === true || ((req.context[RAW] as number | undefined) ?? 0) > 0 || !doc || typeof doc !== 'object') return doc
+    const id = idOf(getAt(doc, field))
+    if (!id || (await readableIds(req, opts, [id])).has(id)) return doc
+    setAt(doc, field, opts.hiddenRecords === 'placeholder' && req.payloadAPI !== 'GraphQL' ? { private: true } : null)
+    return doc
+  }
+
+/** The write side for a cohort: a hidden birthing parent stays as stored; a placeholder or empty value means unchanged. */
+export const keepHiddenBirthParent =
+  (opts: ResolvedOptions, trustedKey: string, skipKey: string): CollectionBeforeValidateHook =>
+  async ({ data, originalDoc, req, operation, context }) => {
+    const field = opts.cohorts?.birthParentField
+    if (!field || (operation !== 'update' && operation !== 'create') || !data || context[skipKey] || context[trustedKey] === true) return data
+    // A new or changed birthing parent must be one the editor can read; a hidden ID and a made-up one get the same refusal.
+    const incoming = idOf(getAt(data, field))
+    const was = originalDoc ? idOf(getAt(originalDoc, field)) : null
+    if (incoming && incoming !== was && !isPrivateParent(getAt(data, field)) && !(await readableIds(req, opts, [incoming])).has(incoming))
+      throw new ValidationError({ collection: opts.cohorts!.collection, errors: [{ path: field, message: 'A parent does not exist or you cannot access it.' }] })
+    if (!originalDoc) return data
+    const before = idOf(getAt(originalDoc, field))
+    if (!before || (await readableIds(req, opts, [before])).has(before)) return data
+    const d = data as Record<string, unknown>
+    const next = getAt(d, field)
+    if (next === undefined) return d
+    if (next === null || isPrivateParent(next) || idOf(next) === before) setAt(d, field, before)
+    else
+      throw new ValidationError({
+        collection: opts.cohorts!.collection,
+        errors: [{ path: field, message: 'This parent is private to you, so you can’t change or remove it. Ask someone who can see it.' }],
+      })
+    return d
+  }
+
+const REFUSED = 'Parent fields can’t be filtered or sorted.'
+export const refused = () => new APIError(REFUSED, 400)
+
+const COMPARE = new Set(['equals', 'in', 'not_equals', 'not_in'])
+/** Nesting of and, or and contains beyond this is refused, so a deep or cyclic where fails closed instead of overflowing the stack. */
+const MAX_DEPTH = 32
+const RELATIONAL = new Set(['relationship', 'upload', 'join'])
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+/** A reference as Payload writes it, `{ relationTo, value }` or `{ id }`, with plain values. */
+const simpleRef = (o: unknown): boolean =>
+  isObj(o) && Object.entries(o).every(([k, v]) => (k === 'relationTo' || k === 'value' || k === 'id') && (v === null || typeof v === 'string' || typeof v === 'number'))
+
+/** True when the requester's access to the individuals returns exactly `true`: nothing is hidden from them. */
+export async function readsEveryIndividual(req: PayloadRequest, opts: ResolvedOptions): Promise<boolean> {
+  const read = req.payload.collections[opts.collection as CollectionSlug]?.config.access.read
+  return read ? (await read({ req } as never)) === true : Boolean(req.user)
+}
+
+/**
+ * Filtering or sorting by a parent field answers "is this hidden record the parent?" for any ID, or orders a hidden
+ * parent among known ones. This runs on every collection, because a path can reach a parent field through any
+ * relationship (`animal.dam`, `mate.dam`, `animal.clutch.mother`), and on joins, which skip the target's own hooks.
+ * Each key is resolved by Payload's own path resolver, so locale codes, `__`, groups, arrays and blocks mean to the
+ * guard what they mean to the database. With access control on, on every read path (find, count, distinct, versions,
+ * joins, GraphQL): sorting and paths below a parent field are refused; `equals`, `in`, `not_equals` and `not_in` are
+ * allowed only when every ID is one the requester can read, so a hidden ID and a made-up one get the same answer;
+ * `exists` and an empty value only with `hiddenRecords: 'placeholder'`, where a hidden parent shows as a placeholder
+ * and counts as set. A key that doesn't resolve, or a where that is too deep, is refused. A where object under a
+ * relationship is accepted only as Payload's nested `contains` (checked against the related collection) or as a plain
+ * reference.
+ */
+export const guardParentQueries =
+  (opts: ResolvedOptions): CollectionBeforeOperationHook =>
+  async ({ args, operation, collection, req }) => {
+    const a = args as { overrideAccess?: boolean; where?: unknown; sort?: unknown; field?: unknown; joins?: unknown; req?: PayloadRequest }
+    const ops = ['read', 'count', 'readDistinct', 'update', 'delete', 'countVersions']
+    if (a.overrideAccess === true || !ops.includes(operation)) return args
+    const request = a.req ?? req
+    const payload = request?.payload
+    if (!payload) throw refused()
+    const locale = request.locale as string | undefined
+    const ids: string[] = []
+
+    const resolve = (slug: string, op: string, raw: string) => resolveKey(payload, opts, slug, fieldSetsFor(payload, slug, op), raw, locale)
+
+    const sortKeys = (sort: unknown): string[] =>
+      (Array.isArray(sort) ? sort : typeof sort === 'string' ? sort.split(',') : sort === undefined || sort === null ? [] : [sort])
+        .map((x) => String(x).trim().replace(/^[-+\s]+/, '').trim())
+        .filter(Boolean)
+
+    const check = (slug: string, op: string, where: unknown, sort: unknown): void => {
+      for (const k of sortKeys(sort)) if (strongestHit(resolve(slug, op, k))) throw refused()
+      const walk = (w: unknown, slug: string, op: string, depth: number): void => {
+        if (depth > MAX_DEPTH) throw refused()
+        if (Array.isArray(w)) return w.forEach((x) => walk(x, slug, op, depth + 1))
+        if (!isObj(w)) return
+        for (const [k, v] of Object.entries(w)) {
+          if ((k.toLowerCase() === 'and' || k.toLowerCase() === 'or') && Array.isArray(v)) {
+            for (const x of v) walk(x, slug, op, depth + 1)
+            continue
+          }
+          const rs = resolve(slug, op, k)
+          const hit = strongestHit(rs)
+          if (!hit) {
+            if (!isObj(v)) continue
+            const last = rs.map((r) => r.entries[r.entries.length - 1]!.field as { type?: string; hasMany?: boolean; relationTo?: unknown; collection?: unknown })
+            const relational = last.some((f) => RELATIONAL.has(f.type ?? ''))
+            // Payload's nested `contains`: one hop, a hasMany relationship or upload with one target, or a join with one target.
+            const nested = rs.flatMap((r, i) => {
+              const f = last[i]!
+              if (r.entries.length !== 1) return []
+              if ((f.type === 'relationship' || f.type === 'upload') && f.hasMany && typeof f.relationTo === 'string') return [f.relationTo]
+              if (f.type === 'join' && typeof f.collection === 'string') return [f.collection]
+              return []
+            })
+            for (const [o, operand] of Object.entries(v)) {
+              if (o === 'contains' && isObj(operand) && nested.length) {
+                for (const t of new Set(nested)) walk(operand, t, 'update', depth + 1)
+                continue
+              }
+              if (!relational) continue
+              for (const x of Array.isArray(operand) ? operand : [operand]) if (x && typeof x === 'object' && !simpleRef(x)) throw refused()
+            }
+            continue
+          }
+          if (hit === 'below' || !isObj(v)) throw refused()
+          for (const [op2, operand] of Object.entries(v)) {
+            if (op2 === 'exists') {
+              if (opts.hiddenRecords !== 'placeholder') throw refused()
+              continue
+            }
+            if (!COMPARE.has(op2)) throw refused()
+            for (const o of Array.isArray(operand) ? operand : typeof operand === 'string' && (op2 === 'in' || op2 === 'not_in') ? operand.split(',') : [operand]) {
+              const id = idOf(o)
+              if (id === null) {
+                // Only an empty value or a placeholder is an empty operand; any other object (or a list of them) is refused.
+                const empty = o === null || o === undefined || o === '' || (isPrivateParent(o) && Object.keys(o).length === 1)
+                if (!empty || opts.hiddenRecords !== 'placeholder') throw refused()
+                continue
+              }
+              ids.push(id)
+            }
+          }
+        }
+      }
+      walk(where, slug, op, 0)
+    }
+
+    try {
+      const slug = collection.slug
+      if (typeof a.field === 'string' && strongestHit(resolve(slug, operation, a.field))) throw refused()
+      check(slug, operation, a.where, a.sort)
+      // Joins: the REST and Local API run them without the target collection's own hooks, so their filter and sort are
+      // checked here. Payload keys a join by its path as the caller wrote it, so the name is looked up as given.
+      if (a.joins && typeof a.joins === 'object') {
+        const config = collection as unknown as { joins?: Record<string, { joinPath: string }[]>; polymorphicJoins?: { joinPath: string; field: { collection: string[] } }[] }
+        for (const [name, j] of Object.entries(a.joins as Record<string, unknown>)) {
+          if (j === false || j === undefined || j === null) continue
+          const targets = [
+            ...Object.entries(config.joins ?? {}).filter(([, list]) => list.some((x) => x.joinPath === name)).map(([t]) => t),
+            ...(config.polymorphicJoins ?? []).filter((p) => p.joinPath === name).flatMap((p) => p.field.collection),
+          ]
+          if (!targets.length) throw refused()
+          const jq = (isObj(j) ? j : {}) as { where?: unknown; sort?: unknown }
+          let checked = 0
+          for (const t of new Set(targets))
+            try {
+              check(t, 'update', jq.where, jq.sort)
+              checked++
+            } catch (e) {
+              // A polymorphic join's key may exist on one target only, as in Payload.
+              if (!(e instanceof Unresolved) || new Set(targets).size === 1) throw e
+            }
+          if (!checked) throw refused()
+        }
+      }
+    } catch (e) {
+      if (e instanceof Unresolved) throw refused()
+      throw e
+    }
+    if (!ids.length) return args
+    // An ID the database can't parse is as unreadable as a made-up one.
+    const ok = await readableIds(request, opts, ids).catch(() => new Set<string>())
+    if (ids.some((id) => !ok.has(id))) throw refused()
+    return args
   }
