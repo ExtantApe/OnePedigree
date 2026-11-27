@@ -34,8 +34,9 @@ const clutches: CollectionConfig = {
 /** A host collection that isn't the individuals or cohorts, but relates to them. */
 const weighings: CollectionConfig = {
   slug: 'weighings',
-  access: { read: () => true, create: write },
-  fields: [{ name: 'name', type: 'text' }, { name: 'animal', type: 'relationship', relationTo: 'animals' }],
+  access: { read: () => true, create: write, update: write, readVersions: () => true },
+  versions: { maxPerDoc: 5 },
+  fields: [{ name: 'name', type: 'text' }, { name: 'animal', type: 'relationship', relationTo: 'animals' }, { name: 'herd', type: 'relationship', relationTo: 'animals', hasMany: true }],
 }
 
 /** A collection added by a plugin that runs after OnePedigree, so it is not in the config OnePedigree sees. */
@@ -93,8 +94,8 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     await mk('animals', 'kid3', { dam: id.Aaa })
     await mk('animals', 'pal', { mate: id.kid })
     await mk('animals', 'pal2', { mate: id.kid3 })
-    await mk('weighings', 'w1', { animal: id.kid })
-    await mk('weighings', 'w2', { animal: id.kid3 })
+    await mk('weighings', 'w1', { animal: id.kid, herd: [id.kid] })
+    await mk('weighings', 'w2', { animal: id.kid3, herd: [id.kid3] })
     await mk('notes', 'n1', { animal: id.kid })
     await payload.update({ collection: 'clutches' as never, id: id.C_hidden!, data: { name: 'C_hidden' } as never })
   })
@@ -353,6 +354,43 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     await expect(payload.find({ collection: 'animals' as never, where: { dam: { equals: extra } } as never, ...as })).rejects.toThrow()
     await expect(payload.find({ collection: 'animals' as never, where: { dam: { in: [extra] } } as never, ...as })).rejects.toThrow()
     expect((await get(`/animals?depth=0&where[dam][equals][private]=true&where[dam][equals][value]=${id.Mhidden}`)).status).toBe(400)
+  })
+
+  it('checks a nested filter on a relationship against the related collection (contains, not_equals, exists)', async () => {
+    for (const f of ['herd', 'animal', 'version.herd']) {
+      const base = f.startsWith('version') ? '/weighings/versions?depth=0' : '/weighings?depth=0'
+      for (const [op, inner] of [['contains', 'dam'], ['contains', 'sire'], ['contains', 'clutch][mother'], ['not_equals', 'dam'], ['contains', 'mate__dam']]) {
+        if (f === 'animal' && op === 'contains') continue
+        await same((v) => `${base}&where[${f}][${op}][${inner}][equals]=${v}`)
+      }
+    }
+    await same((v) => `/weighings/count?where[herd][contains][dam][equals]=${v}`)
+    await same((v) => `/weighings/count?where[herd][contains][dam][in]=${v}`)
+    await same((v) => `/weighings/count?where[or][0][herd][contains][dam][equals]=${v}`)
+    await same((v) => `/weighings?depth=0&where[herd][contains][and][0][dam][equals]=${v}`)
+    await same((v) => `/weighings?depth=0&where[herd][contains][dam][equals]=${v}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    // Readable IDs and ordinary inner fields still work.
+    expect((await get(`/weighings/count?where[herd][contains][dam][equals]=${id.Aaa}`)).status).toBe(200)
+    expect((await get('/weighings/count?where[herd][contains][name][equals]=kid')).status).toBe(200)
+    expect((await get(`/weighings?depth=0&where[herd][contains][dam][like]=${id.Aaa}`)).status).toBe(400)
+    const want = hiddenRecords === 'placeholder' ? 200 : 400
+    for (const p of ['/weighings/count?where[herd][contains][dam][exists]=true', '/weighings?depth=0&where[herd][contains][mate.dam][exists]=true'])
+      expect((await get(p)).status, p).toBe(want)
+  })
+  it('checks a nested filter on a relationship in Local reads, counts, versions and bulk changes', async () => {
+    const as = { overrideAccess: false, user: viewer }
+    for (const v of [id.Mhidden!, NOBODY]) {
+      const where = { herd: { contains: { dam: { equals: v } } } } as never
+      await expect(payload.find({ collection: 'weighings' as never, where, ...as })).rejects.toThrow()
+      await expect(payload.count({ collection: 'weighings' as never, where, ...as })).rejects.toThrow()
+      await expect(payload.find({ collection: 'weighings' as never, where: { herd: { not_equals: { dam: { equals: v } } } } as never, ...as })).rejects.toThrow()
+      await expect(payload.countVersions({ collection: 'weighings' as never, where: { 'version.herd': { contains: { dam: { equals: v } } } } as never, ...as })).rejects.toThrow()
+      await expect(payload.update({ collection: 'weighings' as never, data: { name: 'x' } as never, where, ...as })).rejects.toThrow()
+    }
+    await expect(payload.count({ collection: 'weighings' as never, where: { herd: { contains: { dam: { equals: id.Aaa } } } } as never, ...as })).resolves.toBeTruthy()
+  })
+  it('joins are looked up by the name as given, so a join filter on a parent field is still refused', async () => {
+    await same((v) => `/clutches?depth=1&where[name][equals]=C_hidden&joins[members][where][dam][equals]=${v}`)
   })
 
   it('refuses a cohort saved with a birthing parent the editor cannot read, the same for hidden and made-up IDs', async () => {

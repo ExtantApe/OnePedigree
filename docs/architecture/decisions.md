@@ -4,7 +4,6 @@ Decisions the owner made about OnePedigree, newest first, each with its date. Mo
 
 | Date | Decision |
 | --- | --- |
-| 2026-11-26 | **The query guard reads `__` as a dot:** Payload and the MongoDB adapter turn a double underscore in a filter, sort, distinct field or join name into a dot (GraphQL writes group fields that way), so the guard normalizes keys the same way before it classifies them. Normalizing was chosen over refusing keys that contain `__`, because GraphQL uses `__` for every group field and refusing it would break harmless filters on ordinary fields; normalizing matches what the database will actually run. In `placeholder` mode only an exact `{ private: true }` counts as an empty operand. |
 | 2026-11-21 | **Core exports its own version:** `CORE_VERSION` in `@extantape/onepedigree-core`, equal to its `package.json` version, so a host can record which version of the arithmetic produced a result. Kept as a one-line `version.ts`, bumped with the release and checked by a test, because the build (tsup) has no define step and importing `package.json` at runtime would break bundlers. Asked for by a host site. |
 | 2026-11-14 | **EXTANT APE owns OnePedigree:** the repo moves to `ExtantApe/OnePedigree` and the packages publish under `@extantape`, from 0.1.0-alpha.22. The old package names get deprecated with a pointer to the new ones. The owner approved the move. Relayed. |
 | 2026-11-10 | **The studbook package name:** `onepedigree-studbook`. The owner chose "Yes, that name (Recommended)" when asked, before its first publish. Relayed. |
@@ -16,3 +15,10 @@ Decisions the owner made about OnePedigree, newest first, each with its date. Mo
 | 2026-11-10 | **Who sees mean kinship and gene diversity:** "The project coordinator sees everything; members see the numbers for their own animals, so they understand why a pairing is suggested." Relayed. |
 | 2026-11-10 | **A lead's assignment of an animal to a keeper needs the keeper to accept, like a transfer.** This is built by the platform. Relayed. |
 | 2026-11-09 | **Both IDs on every studbook animal:** the registry ID and the keeper's Animal ID are shown together, searchable by either, and in every export and report. Relayed. |
+
+## Design notes
+
+Choices made by the author, not decisions of the owner.
+
+- **2026-11-26, the query guard reads `__` as a dot.** Payload's search and sort validation and the MongoDB adapter turn a double underscore in a filter or sort key into a dot (GraphQL writes group fields that way), so the guard normalizes keys the same way before it classifies them. Normalizing was chosen over refusing keys that contain `__`, because GraphQL uses `__` for every group field and refusing it would break harmless filters on ordinary fields. Join names are looked up by their dotted path as given, so the guard does not rewrite them. In `placeholder` mode only an exact `{ private: true }` counts as an empty operand.
+- **2026-11-26, nested filters on relationships are walked.** When a key is a relationship or join field, each object operand (`herd[contains][dam][equals]`) is classified against the target collections, recursively, because Payload runs it as a subquery there.

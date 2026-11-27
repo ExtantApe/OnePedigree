@@ -340,3 +340,9 @@ Promise: a hidden parent can't be probed through a `__` spelling of a path.
 Covered (`hidden-parent-queries.shared.ts` and `hidden-parent-underscore-standard.shared.ts`, both modes), hidden vs made-up IDs giving the same answer: `__` in REST filters, counts and sorts (role fields, other collections, a later plugin's collection, mixed `.` and `__`); versions, REST join filters and sorts, bulk PATCH and DELETE; Local find, count, countVersions, update, delete, joins and distinct; GraphQL filters, count, sort; `exists` through `__` only with placeholders; on a standard-fields install, `parentage__parents__individual`, `parentage__mother` over REST, count, sort, versions, bulk, Local and GraphQL; a placeholder-shaped operand with extra keys. Readable IDs and ordinary `__` fields still work.
 
 Not covered: a real Next.js handler, and a database other than MongoDB.
+
+### 2026-11-26 round 7: nested filters on relationships
+
+Covered (`hidden-parent-queries.shared.ts`, both modes), hidden vs made-up IDs giving the same answer: `herd[contains][dam|sire|clutch.mother|mate.dam][equals]` on find, count, versions (`version.herd`), bulk PATCH, `or`/`and` nesting, `in`, `not_equals`, and `exists` (only with placeholders); Local find, count, countVersions and update; readable IDs and ordinary inner fields still work; a join filter on a parent field is still refused.
+
+Not covered: a real Next.js handler, and a database other than MongoDB.

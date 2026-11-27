@@ -354,17 +354,24 @@ export const guardParentQueries =
     const check = (slug: string, where: unknown, sort: unknown): void => {
       const sorts = (Array.isArray(sort) ? sort : typeof sort === 'string' ? sort.split(',') : []).map((x) => String(x).trim().replace(/^-/, ''))
       if (sorts.some((k) => classify(slug, k))) throw refused()
-      const walk = (w: unknown): void => {
-        if (Array.isArray(w)) return w.forEach(walk)
+      const walk = (w: unknown, slug: string): void => {
+        if (Array.isArray(w)) return w.forEach((x) => walk(x, slug))
         if (!w || typeof w !== 'object') return
         for (const [k, v] of Object.entries(w as Record<string, unknown>)) {
           if (k === 'and' || k === 'or') {
-            walk(v)
+            walk(v, slug)
             continue
           }
           const kind = classify(slug, k)
           if (!kind) {
-            walk(v)
+            walk(v, slug)
+            // On a relationship or join field, an operator can take a where object that Payload runs as a subquery on the
+            // related collection (`herd[contains][dam][equals]`), so each object operand is checked against its targets.
+            const dk = dotted(k)
+            const targets = relations(slug).get(dk) ?? (dk.startsWith('version.') ? relations(slug).get(dk.slice(8)) : undefined) ?? []
+            if (targets.length && v && typeof v === 'object' && !Array.isArray(v))
+              for (const operand of Object.values(v as Record<string, unknown>))
+                for (const o of Array.isArray(operand) ? operand : [operand]) if (o && typeof o === 'object') for (const t of targets) walk(o, t)
             continue
           }
           if (kind === 'below' || !v || typeof v !== 'object' || Array.isArray(v)) throw refused()
@@ -387,7 +394,7 @@ export const guardParentQueries =
           }
         }
       }
-      walk(where)
+      walk(where, slug)
     }
     const slug = collection.slug
     if (typeof a.field === 'string' && classify(slug, a.field)) throw refused()
