@@ -77,13 +77,24 @@ work only with IDs the requester can read, so a hidden ID and a made-up one get 
 with `hiddenRecords: 'placeholder'`.
 
 The guard asks Payload's own path resolver what each filter key means, so `dam`, `lherd.en`, `animal__dam` and
-`version.animal.dam` are the same field to the guard that they are to the database. It runs on every collection in the
-host, including ones a plugin adds after this one and Payload's own, on find, count, versions, count of versions,
-distinct values, bulk update and delete, REST and Local joins, and GraphQL. A key that doesn't resolve is refused. So is a
+`version.animal.dam` are the same field to the guard that they are to the database. In a standard-fields install, every
+field in a `parents` row counts as a parent field (the row's `role` and `id` too), because they show that a hidden
+parent exists. Filtering or sorting on them is refused with access control on, and `exists` works only with
+`hiddenRecords: 'placeholder'`. The guard runs on every collection in the host, including Payload's own, on find, count,
+versions, count of versions, distinct values, bulk update and delete, REST and Local joins, and GraphQL. A key that
+doesn't resolve is refused. So is a
 path of more than eight relationship hops, a where nested deeper than 32 levels, and an object under a relationship
 that is neither Payload's nested `contains` (which is checked against the related collection) nor a plain
 `{ relationTo, value }` reference. Only paths that follow relationship fields are followed, so a host that stores a
 parent ID in a plain text or JSON field has to guard that itself.
+
+Collections and globals that a plugin adds after this one get the guard when the database adapter starts, again in
+`onInit`, again after Payload's dev reload, and on the first operation on any collection that already has it. If the
+guard can't be put on one (for example its hook list is frozen), Payload refuses to start, or the operation is refused.
+A startup check also resolves each parent path and refuses to start if Payload's resolver doesn't hand back the guarded
+field, as a Payload version that returned copies would. One gap is left. If a later plugin replaces the database adapter
+with one that doesn't call this plugin's, and Payload starts with `onInit` off or replaced, the guard reaches a late
+collection only after the first operation on a collection this plugin already guards (any write counts), not before.
 
 Versions of a global can't be filtered through a hook, because Payload doesn't run one for them. Instead, a global that
 refers to individuals (directly, or through relationship, upload or join fields) answers its version reads with

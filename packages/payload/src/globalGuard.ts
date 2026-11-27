@@ -73,3 +73,6 @@ export function guardGlobalVersions<T extends GlobalConfig>(global: T, opts: Res
   global.access = access
   return global
 }
+
+/** True when the global has no versions, or its version reads carry the guard. */
+export const globalVersionsGuarded = (global: GlobalConfig): boolean => !global.versions || Boolean((global.access?.readVersions as { [MARK]?: boolean } | undefined)?.[MARK])

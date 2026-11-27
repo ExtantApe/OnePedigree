@@ -151,3 +151,34 @@ export function resolveKey(payload: Payload, opts: ResolvedOptions, slug: string
 }
 
 export const strongestHit = (rs: Resolved[]): Hit => rs.reduce<Hit>((h, r) => strongest(h, r.hit), null)
+
+/**
+ * Startup self-check. The guard recognises a parent field by identity: the object Payload's resolver returns for a key
+ * has to be the very object the guard holds. If a Payload version hands back a copy, nothing would match and every
+ * filter would pass, so each configured parent path is resolved here and must come back as guarded. Throws if not.
+ */
+export function assertResolverGuards(payload: Payload, opts: ResolvedOptions): void {
+  const slugs = [opts.collection, ...(opts.cohorts ? [opts.cohorts.collection] : [])]
+  for (const slug of slugs) {
+    if (!payload.collections[slug as never]) continue
+    let sets: FieldSet[]
+    try {
+      sets = fieldSetsFor(payload, slug, 'read')
+    } catch (error) {
+      throw new Error(`OnePedigree: can't check the query guard on "${slug}": ${(error as Error).message}`)
+    }
+    for (const set of sets) {
+      for (const path of [...guardedPaths(opts, slug), ...guardedRowRoots(opts, slug)]) {
+        // A path that names no field in this install has nothing to guard.
+        if (!fieldsAt(payload, set.fields, [...(set.version ? ['version'] : []), ...path.split('.')]).length) continue
+        let hit: Hit = null
+        try {
+          hit = strongestHit(resolveKey(payload, opts, slug, [set], set.version ? `version.${path}` : path, undefined))
+        } catch {
+          hit = null
+        }
+        if (hit !== 'exact') throw new Error(`OnePedigree: Payload's path resolver didn't return the guarded field for "${path}" on "${slug}", so parent filters can't be guarded. This Payload version isn't supported.`)
+      }
+    }
+  }
+}

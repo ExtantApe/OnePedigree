@@ -88,13 +88,17 @@ const chain: GlobalConfig = { slug: 'chain', access: { read: () => true, readVer
 const lateGlobal: GlobalConfig = { slug: 'lateGlobal', access: { read: () => true, readVersions: () => true, update: write }, versions: { max: 5 }, fields: [rel('animal', 'animals')] as never }
 /** A collection added by a plugin that runs after OnePedigree, so OnePedigree's config pass never sees it. */
 const laterPlugin = (config: Config): Config => ({ ...config, collections: [...(config.collections ?? []), notes], globals: [...(config.globals ?? []), lateGlobal] })
+/** A later plugin that sets its own onInit without calling the one before it. */
+const unchainedInit = (config: Config): Config => ({ ...config, onInit: async () => {} })
+/** A late collection whose hook list can't be changed, so the guard can't be put on it. */
+const lockedLate = (config: Config): Config => ({ ...config, collections: [...(config.collections ?? []), { slug: 'locked', access: { read: () => true }, hooks: { beforeOperation: Object.freeze([]) as never }, fields: [{ name: 'name', type: 'text' }] }] })
 
 export type Mode = 'omit' | 'placeholder'
 export type Body = Record<string, unknown> & { docs?: { name: string }[]; totalDocs?: number; errors?: unknown[]; token?: string }
 
 export type Ctx = Awaited<ReturnType<typeof startFixture>>
 
-export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean } = {}) {
+export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean; replaceDb?: boolean; unchainedInit?: boolean; lockedLate?: boolean } = {}) {
   const uploads = mkdtempSync(join(tmpdir(), 'onepedigree-uploads-'))
   const photosWithDir = { ...photos, upload: { staticDir: uploads } } as CollectionConfig
   const { payload, stop: stopPayload } = await startPayload({
@@ -104,6 +108,8 @@ export async function startFixture(hiddenRecords: Mode, options: { disableOnInit
     plugins: [
       onePedigree({ collection: 'animals', mode: 'mapped', fields: { label: 'name', parentage: { kind: 'role-fields', roles: { mother: 'dam', father: 'sire' }, cohort: 'clutch' } }, cohorts: { collection: 'clutches', birthParentField: 'mother' }, hiddenRecords }),
       laterPlugin,
+      ...(options.unchainedInit ? [unchainedInit] : []),
+      ...(options.lockedLate ? [lockedLate] : []),
     ],
   }, options)
   const id: Record<string, string> = {}

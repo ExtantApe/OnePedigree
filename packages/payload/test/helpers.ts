@@ -4,18 +4,27 @@ import { createParentTermsPreferenceField } from '../src'
 import { buildConfig, createLocalReq, getPayload, type CollectionConfig, type Config, type Payload, type TypedUser } from 'payload'
 
 /** A real Payload instance on an in-memory MongoDB replica set (transactions on). */
-export async function startPayload(config: Omit<Config, 'db' | 'secret'>, options: { disableOnInit?: boolean } = {}) {
+export async function startPayload(config: Omit<Config, 'db' | 'secret'>, options: { disableOnInit?: boolean; replaceDb?: boolean } = {}) {
   const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
-  const payload = await getPayload({
-    disableOnInit: options.disableOnInit,
-    config: await buildConfig({
-      ...config,
-      secret: 'test-secret-not-for-production',
-      telemetry: false,
-      typescript: { autoGenerate: false },
-      db: mongooseAdapter({ url: mongo.getUri('onepedigree'), ensureIndexes: true }),
-    }),
-  })
+  const adapter = () => mongooseAdapter({ url: mongo.getUri('onepedigree'), ensureIndexes: true })
+  let payload: Payload
+  try {
+    payload = await getPayload({
+      disableOnInit: options.disableOnInit,
+      config: await buildConfig({
+        ...config,
+        // A plugin that runs last and puts its own adapter in place of the one the host set, as a host's db plugin might.
+        plugins: [...(config.plugins ?? []), ...(options.replaceDb ? [(c: Config): Config => ({ ...c, db: adapter() })] : [])],
+        secret: 'test-secret-not-for-production',
+        telemetry: false,
+        typescript: { autoGenerate: false },
+        db: adapter(),
+      }),
+    })
+  } catch (error) {
+    await mongo.stop()
+    throw error
+  }
   return {
     payload,
     stop: async () => {

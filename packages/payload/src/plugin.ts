@@ -1,10 +1,11 @@
 import { PEDIGREE_VIEWS } from '@extantape/onepedigree-core'
-import type { CollectionConfig, Config, Field, GlobalConfig, Payload, Plugin } from 'payload'
+import type { CollectionBeforeOperationHook, CollectionConfig, Config, Field, GlobalConfig, Payload, Plugin } from 'payload'
 
 import { createCohortsCollection, createIndividualsCollection } from './collections.js'
 import { cohortMembersEndpoint, pedigreeEndpoint, relativesEndpoint, validateEndpoint } from './endpoints.js'
+import { assertResolverGuards } from './parentPaths.js'
 import { createParentageField } from './fields.js'
-import { guardGlobalVersions } from './globalGuard.js'
+import { globalVersionsGuarded, guardGlobalVersions } from './globalGuard.js'
 import { cohortBirthParentBeforeChange, parentageBeforeChange, parentBeforeDelete, rememberAccessMode, SKIP, TRUSTED } from './integrity.js'
 import { resolveOptions } from './mapping.js'
 import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, guardParentQueries } from './privacy.js'
@@ -152,7 +153,15 @@ export const onePedigree =
       return c
     })
     // Every collection, not only the individuals and cohorts: a query can reach a parent field through any relationship.
-    const guard = guardParentQueries(opts)
+    const queryGuard = guardParentQueries(opts)
+    // The guard also makes sure the late install has happened for the config that is running now: a dev reload swaps
+    // the config, and a later plugin can replace the database adapter or the init that would have done it.
+    const installedFor = new WeakSet<object>()
+    const guard = (async (a: Parameters<CollectionBeforeOperationHook>[0]) => {
+      const payload = ((a.args as { req?: { payload?: Payload } } | undefined)?.req ?? a.req)?.payload
+      if (payload && !installedFor.has(payload.config)) installLate(payload)
+      return queryGuard(a)
+    }) as CollectionBeforeOperationHook
     if (!opts.disabled) {
       collections = collections.map((c): CollectionConfig => ({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
     }
@@ -170,14 +179,47 @@ export const onePedigree =
       if (opts.disabled) return
       const finalCollections = [...(payload.config.collections ?? []), ...Object.values(payload.collections ?? {}).map((c) => c.config)]
       for (const c of new Set(finalCollections)) {
-        const hooks = (c.hooks ??= {} as never) as { beforeOperation?: unknown[] }
-        const list = (hooks.beforeOperation ??= [])
-        if (!list.includes(guard)) list.push(guard)
+        try {
+          const hooks = (c.hooks ??= {} as never) as { beforeOperation?: unknown[] }
+          const list = (hooks.beforeOperation ??= [])
+          if (!list.includes(guard)) list.push(guard)
+        } catch {
+          // Not changeable: the collection would answer without the guard, so nothing starts or answers.
+        }
+        if (!((c.hooks?.beforeOperation ?? []) as unknown[]).includes(guard)) throw new Error(`OnePedigree: could not guard collection "${c.slug}", so Payload won't start or answer queries without the guard. Add the collection before this plugin, or make its hooks changeable.`)
       }
-      for (const g of new Set([...(payload.config.globals ?? []), ...(payload.globals?.config ?? [])])) guardGlobalVersions(g, opts, true)
+      for (const g of new Set([...(payload.config.globals ?? []), ...(payload.globals?.config ?? [])])) {
+        try {
+          guardGlobalVersions(g, opts, true)
+        } catch {
+          // Checked below.
+        }
+        if (!globalVersionsGuarded(g)) throw new Error(`OnePedigree: could not guard the versions of global "${g.slug}", so Payload won't start or answer queries without the guard.`)
+      }
+      assertResolverGuards(payload, opts)
+      installedFor.add(payload.config)
     }
     const host = config.db as { init?: (args: { payload: Payload }) => unknown } | undefined
-    const db = !opts.disabled && host && typeof host.init === 'function' ? { ...host, init: (args: { payload: Payload }) => (installLate(args.payload), host.init!(args)) } : host
+    // `init` of the factory runs once at start. Payload's dev reload calls `init` on the adapter it made, so that one is wrapped too.
+    const db =
+      !opts.disabled && host && typeof host.init === 'function'
+        ? {
+            ...host,
+            init: (args: { payload: Payload }) => {
+              installLate(args.payload)
+              const adapter = host.init!(args) as { init?: (...a: unknown[]) => unknown; payload?: Payload } | undefined
+              if (adapter && typeof adapter.init === 'function') {
+                const own = adapter.init
+                adapter.init = function (this: unknown, ...rest: unknown[]) {
+                  const payload = adapter.payload ?? args.payload
+                  installLate(payload)
+                  return own.apply(this, rest)
+                }
+              }
+              return adapter
+            },
+          }
+        : host
     // The graph revision document must exist before the first parentage write: two transactions
     // that each create it would not conflict, so concurrent writes could both commit.
     const onInit: Config['onInit'] = async (payload) => {
