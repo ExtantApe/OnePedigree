@@ -1,5 +1,5 @@
 import { PEDIGREE_VIEWS } from '@extantape/onepedigree-core'
-import type { Access, CollectionBeforeOperationHook, CollectionConfig, Config, Field, GlobalConfig, Payload, Plugin } from 'payload'
+import { databaseKVAdapter, type Access, type CollectionBeforeOperationHook, type CollectionConfig, type Config, type EmailAdapter, type Field, type GlobalConfig, type KVAdapterResult, type Payload, type Plugin } from 'payload'
 
 import { createCohortsCollection, createIndividualsCollection } from './collections.js'
 import { cohortMembersEndpoint, pedigreeEndpoint, relativesEndpoint, validateEndpoint } from './endpoints.js'
@@ -253,6 +253,28 @@ export const onePedigree =
             },
           }
         : host
+    // Payload calls the key-value store's `init` on every start, right after the adapter's, also when a later plugin
+    // replaced the adapter and `onInit` is off, so the install runs there too, before anything is answered. A throw
+    // refuses the start. With no store set by the host this is the one Payload would add itself, with its collection.
+    const hostKv: KVAdapterResult = config.kv ?? databaseKVAdapter()
+    const kv: KVAdapterResult | undefined = opts.disabled
+      ? config.kv
+      : {
+          ...hostKv,
+          init: (args) => {
+            installLate(args.payload)
+            return hostKv.init(args)
+          },
+        }
+    // Payload loads the email adapter on every start after connecting, so a host's adapter is a second install point,
+    // for when a later plugin replaced the store as well. With none set, Payload's own console adapter stays.
+    const hostEmail = config.email
+    const withInstall = (adapter: EmailAdapter): EmailAdapter => (args) => {
+      installLate(args.payload)
+      return adapter(args)
+    }
+    const email: Config['email'] =
+      opts.disabled || !hostEmail ? hostEmail : hostEmail instanceof Promise ? hostEmail.then(withInstall) : withInstall(hostEmail)
     // The graph revision document must exist before the first parentage write: two transactions
     // that each create it would not conflict, so concurrent writes could both commit.
     const onInit: Config['onInit'] = async (payload) => {
@@ -272,5 +294,5 @@ export const onePedigree =
           else await new Promise((r) => setTimeout(r, 200 * attempt))
         }
     }
-    return { ...config, ...(db ? { db: db as never } : {}), collections, globals, onInit, custom: { ...config.custom, onepedigree: opts } }
+    return { ...config, ...(db ? { db: db as never } : {}), ...(kv ? { kv } : {}), ...(email ? { email } : {}), collections, globals, onInit, custom: { ...config.custom, onepedigree: opts } }
   }

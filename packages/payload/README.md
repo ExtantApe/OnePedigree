@@ -99,16 +99,25 @@ collection that only a later plugin adds would miss the hooks that keep a hidden
 throws when it can't find it. At start, it also refuses if a later plugin dropped either collection or replaced it
 with a copy that lacks this plugin's hooks.
 
-If a later plugin replaces the database adapter with one that doesn't call this plugin's, and Payload starts with
-`onInit` off or replaced, none of this plugin runs at start. The guard and these checks then run on the first
-operation on a collection this plugin guards, which then goes ahead guarded. If the first operation is instead a
-filter or sort from a collection a later plugin added that reaches into the individuals or cohorts collection, it
-installs the guard and is refused once, so its answer can't come from an unguarded install. In this start mode the
-first Admin panel request for the signed-in user's permissions is refused once in the same way, and works when it's
-retried.
-One gap is left in this start mode: if a later plugin replaced the individuals or cohorts collection outright, a read
-of that collection that comes before any other operation goes out without this plugin's hooks, because nothing of the
-plugin is left on it to notice. Don't replace those two collections in a later plugin.
+Payload starts the key-value store (`kv` in the config) on every start, right after the database adapter, and also
+when a later plugin replaced the adapter and Payload starts with `onInit` off. The plugin wraps that store's start,
+so the guard and these checks always run before Payload answers anything, and a failed check stops the start. If you
+set no store, the plugin passes on the one Payload would add by default, with its hidden `payload-kv` collection, so
+nothing changes. A store you set yourself is wrapped and keeps working. If you set an email adapter, its start is
+wrapped the same way, as a second chance.
+
+One case is left. If a later plugin replaces the database adapter and the store with ones that don't call this
+plugin's, no email adapter is set, and Payload starts with `onInit` off, none of this plugin runs at start. The guard
+and the checks then run on the first operation on a collection this plugin guards. A filter or sort from a late
+collection that reaches into the individuals or cohorts collection, coming first, installs the guard and is refused
+once, and so is the first Admin panel request for the signed-in user's permissions (it works when retried). In that
+case a later plugin that also replaced the individuals or cohorts collection, or their read access, can leak a hidden
+parent until the first guarded operation runs. Don't replace the database adapter, the store or those two collections
+in a plugin that runs after this one.
+
+The plugin can't judge hooks other code adds. A later `afterRead` hook on the individuals or cohorts collection
+that reads the record again with `overrideAccess: true` and returns it gives back the hidden parent the plugin
+removed. Keep added read hooks on those collections on the reader's access.
 
 Versions of a global can't be filtered through a hook, because Payload doesn't run one for them. Instead, a global that
 refers to individuals (directly, or through relationship, upload or join fields) answers its version reads with

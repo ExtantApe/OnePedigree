@@ -98,7 +98,7 @@ export type Body = Record<string, unknown> & { docs?: { name: string }[]; totalD
 
 export type Ctx = Awaited<ReturnType<typeof startFixture>>
 
-export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean; replaceDb?: boolean; unchainedInit?: boolean; lockedLate?: boolean; rawSeed?: boolean } = {}) {
+export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean; replaceDb?: boolean; replaceKv?: boolean; unchainedInit?: boolean; lockedLate?: boolean; rawSeed?: boolean } = {}) {
   const uploads = mkdtempSync(join(tmpdir(), 'onepedigree-uploads-'))
   const photosWithDir = { ...photos, upload: { staticDir: uploads } } as CollectionConfig
   // A start that throws (a refusal test) never reaches stop(), so the folder is removed here before the error goes on.

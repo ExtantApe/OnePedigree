@@ -1,20 +1,31 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import { randomUUID } from 'node:crypto'
 import { createParentTermsPreferenceField } from '../src'
-import { buildConfig, createLocalReq, getPayload, type CollectionConfig, type Config, type Payload, type TypedUser } from 'payload'
+import { buildConfig, createLocalReq, getPayload, inMemoryKVAdapter, type CollectionConfig, type Config, type Payload, type TypedUser } from 'payload'
 
 /** A real Payload instance on an in-memory MongoDB replica set (transactions on). */
-export async function startPayload(config: Omit<Config, 'db' | 'secret'>, options: { disableOnInit?: boolean; replaceDb?: boolean } = {}) {
+export async function startPayload(config: Omit<Config, 'db' | 'secret'>, options: { disableOnInit?: boolean; replaceDb?: boolean; replaceKv?: boolean } = {}) {
   const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
   const adapter = () => mongooseAdapter({ url: mongo.getUri('onepedigree'), ensureIndexes: true })
+  // getPayload keeps one instance per key for the whole process, so without a key of its own a second start in the
+  // same test file would get the first one back (already stopped) instead of a new one.
+  const key = `onepedigree-test-${randomUUID()}`
+  const forget = () => (globalThis as { _payload?: Map<string, unknown> })._payload?.delete(key)
   let payload: Payload
   try {
     payload = await getPayload({
+      key,
       disableOnInit: options.disableOnInit,
       config: await buildConfig({
         ...config,
         // A plugin that runs last and puts its own adapter in place of the one the host set, as a host's db plugin might.
-        plugins: [...(config.plugins ?? []), ...(options.replaceDb ? [(c: Config): Config => ({ ...c, db: adapter() })] : [])],
+        // `replaceKv` does the same with the key-value store, so neither of OnePedigree's start wrappers is left.
+        plugins: [
+          ...(config.plugins ?? []),
+          ...(options.replaceDb ? [(c: Config): Config => ({ ...c, db: adapter() })] : []),
+          ...(options.replaceKv ? [(c: Config): Config => ({ ...c, kv: inMemoryKVAdapter() })] : []),
+        ],
         secret: 'test-secret-not-for-production',
         telemetry: false,
         typescript: { autoGenerate: false },
@@ -22,12 +33,14 @@ export async function startPayload(config: Omit<Config, 'db' | 'secret'>, option
       }),
     })
   } catch (error) {
+    forget()
     await mongo.stop()
     throw error
   }
   return {
     payload,
     stop: async () => {
+      forget()
       await payload.destroy()
       await mongo.stop()
     },

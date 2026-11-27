@@ -18,7 +18,7 @@ const plugin = () => onePedigree(options as never)
 
 /** A plugin that runs after OnePedigree and changes the collection list. */
 const later = (change: (cs: CollectionConfig[]) => CollectionConfig[]) => (c: Config): Config => ({ ...c, collections: change([...(c.collections ?? [])]) })
-const start = (collections: CollectionConfig[], plugins: Config['plugins'], o: { disableOnInit?: boolean; replaceDb?: boolean } = {}) =>
+const start = (collections: CollectionConfig[], plugins: Config['plugins'], o: { disableOnInit?: boolean; replaceDb?: boolean; replaceKv?: boolean } = {}) =>
   startPayload({ collections: [usersCollection, ...collections], plugins }, o)
 
 describe('configured collections must carry the guard', () => {
@@ -41,9 +41,10 @@ describe('configured collections must carry the guard', () => {
     }
   })
 
-  it('with the adapter replaced and onInit off, refuses the first operation on any guarded collection once a configured one was replaced', async () => {
+  it('with the adapter and the store replaced and onInit off, refuses the first operation on any guarded collection once a configured one was replaced', async () => {
     // Nothing of this plugin runs at start in that mode, so the check runs on the first operation that reaches its hooks.
-    const { payload, stop } = await start([animals, clutches], [plugin(), later((cs) => cs.map((c) => (c.slug === 'clutches' ? clutches : c)))], { disableOnInit: true, replaceDb: true })
+    // With the store kept, the start itself is refused (guard-late-install-kv.test.ts).
+    const { payload, stop } = await start([animals, clutches], [plugin(), later((cs) => cs.map((c) => (c.slug === 'clutches' ? clutches : c)))], { disableOnInit: true, replaceDb: true, replaceKv: true })
     try {
       for (let i = 0; i < 2; i++) await expect(payload.find({ collection: 'users', depth: 0 })).rejects.toThrow(/"clutches" is missing or was replaced/)
     } finally {
