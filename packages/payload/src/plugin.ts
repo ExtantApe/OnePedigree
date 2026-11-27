@@ -1,5 +1,5 @@
 import { PEDIGREE_VIEWS } from '@extantape/onepedigree-core'
-import type { CollectionBeforeOperationHook, CollectionConfig, Config, Field, GlobalConfig, Payload, Plugin } from 'payload'
+import type { Access, CollectionBeforeOperationHook, CollectionConfig, Config, Field, GlobalConfig, Payload, Plugin } from 'payload'
 
 import { createCohortsCollection, createIndividualsCollection } from './collections.js'
 import { cohortMembersEndpoint, pedigreeEndpoint, relativesEndpoint, validateEndpoint } from './endpoints.js'
@@ -8,7 +8,7 @@ import { createParentageField } from './fields.js'
 import { globalVersionsGuarded, guardGlobalVersions } from './globalGuard.js'
 import { cohortBirthParentBeforeChange, parentageBeforeChange, parentBeforeDelete, rememberAccessMode, SKIP, TRUSTED } from './integrity.js'
 import { resolveOptions } from './mapping.js'
-import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, guardParentQueries } from './privacy.js'
+import { birthParentAfterRead, keepHiddenBirthParent, keepHiddenParents, keptParentValidate, parentageAfterRead, guardParentQueries, refused } from './privacy.js'
 import type { OnePedigreePluginOptions, ResolvedOptions } from './types.js'
 
 const CLIENT = '@extantape/payload-plugin-onepedigree/client'
@@ -162,8 +162,27 @@ export const onePedigree =
       if (payload && !installedFor.has(payload.config)) installLate(payload)
       return queryGuard(a)
     }) as CollectionBeforeOperationHook
+    // A collection that no hook of this plugin reaches (one a later plugin added, when the adapter was replaced and
+    // onInit is off) can still reach a parent field by filtering through a relationship, and Payload then asks the
+    // collection that holds the parent field whether the requester may read it. That answer is also the last place to
+    // notice an install that never happened: it installs now and refuses this one operation, with the guard's own
+    // message, so the first query can't be answered unguarded. Once installed it only passes the host's answer on.
+    const tripwire = (c: CollectionConfig): CollectionConfig => {
+      const read = c.access?.read
+      if (c.slug !== opts.collection && c.slug !== opts.cohorts?.collection) return c
+      const wrapped = async (a: Parameters<Access>[0]) => {
+        const payload = a.req?.payload
+        if (!payload) throw refused()
+        if (!installedFor.has(payload.config)) {
+          installLate(payload)
+          throw refused()
+        }
+        return typeof read === 'function' ? read(a) : read ?? Boolean(a.req.user)
+      }
+      return { ...c, access: { ...c.access, read: wrapped as Access } }
+    }
     if (!opts.disabled) {
-      collections = collections.map((c): CollectionConfig => ({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
+      collections = collections.map((c): CollectionConfig => tripwire({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
     }
 
     const globals = (config.globals ?? []).map((g) => (opts.disabled ? g : guardGlobalVersions(g, opts)))

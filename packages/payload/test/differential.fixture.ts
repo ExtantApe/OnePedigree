@@ -98,7 +98,7 @@ export type Body = Record<string, unknown> & { docs?: { name: string }[]; totalD
 
 export type Ctx = Awaited<ReturnType<typeof startFixture>>
 
-export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean; replaceDb?: boolean; unchainedInit?: boolean; lockedLate?: boolean } = {}) {
+export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean; replaceDb?: boolean; unchainedInit?: boolean; lockedLate?: boolean; rawSeed?: boolean } = {}) {
   const uploads = mkdtempSync(join(tmpdir(), 'onepedigree-uploads-'))
   const photosWithDir = { ...photos, upload: { staticDir: uploads } } as CollectionConfig
   const { payload, stop: stopPayload } = await startPayload({
@@ -114,16 +114,31 @@ export async function startFixture(hiddenRecords: Mode, options: { disableOnInit
   }, options)
   const id: Record<string, string> = {}
   const mk = async (c: string, k: string, d: object = {}) => {
-    id[k] = String((await payload.create({ collection: c as never, data: { name: k, ...d } as never })).id)
+    // Raw seeding writes through the adapter, so no collection operation (and no guard hook) runs before the test's first query.
+    id[k] = String((options.rawSeed ? await payload.db.create({ collection: c as never, data: { name: k, ...d } as never }) : await payload.create({ collection: c as never, data: { name: k, ...d } as never })).id)
   }
   const users: Record<string, TypedUser> = {}
   const jwts: Record<string, string> = {}
   for (const r of ['viewer', 'admin']) {
+    if (options.rawSeed) {
+      users[r] = (await payload.db.create({ collection: 'users', data: { email: `${r}@example.com`, role: r } as never })) as unknown as TypedUser
+      continue
+    }
     users[r] = (await payload.create({ collection: 'users', data: { email: `${r}@example.com`, password: 'a-long-test-password', role: r } as never })) as TypedUser
     const res = await handleEndpoints({ config: payload.config, request: new Request('http://localhost/api/users/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: `${r}@example.com`, password: 'a-long-test-password' }) }) })
     jwts[r] = ((await res.json()) as { token: string }).token
   }
   const viewer = users.viewer!
+  if (options.rawSeed) {
+    await mk('animals', 'H', { visibility: 'private' })
+    await mk('animals', 'A')
+    await mk('clutches', 'C1', { mother: id.H })
+    await mk('clutches', 'C2', { mother: id.A })
+    await mk('animals', 'kid', { dam: id.H, clutch: id.C1 })
+    await mk('animals', 'kid2', { dam: id.A, clutch: id.C2 })
+    await mk('notes', 'n1', { animal: id.kid })
+    await mk('notes', 'n2', { animal: id.kid2 })
+  } else {
   await mk('animals', 'H', { visibility: 'private' })
   await mk('animals', 'A')
   await mk('clutches', 'C1', { mother: id.H })
@@ -158,6 +173,7 @@ export async function startFixture(hiddenRecords: Mode, options: { disableOnInit
   for (const g of ['chain', 'lateGlobal'])
     for (let i = 0; i < 2; i++) await payload.updateGlobal({ slug: g as never, data: (g === 'chain' ? { pen: id.p1 } : { animal: id.kid }) as never })
   await payload.create({ collection: 'payload-locked-documents' as never, data: { document: { relationTo: 'animals', value: id.kid }, user: { relationTo: 'users', value: viewer.id } } as never })
+  }
 
   const call = async (path: string, init: RequestInit = {}, as: 'viewer' | 'admin' | null = 'viewer') => {
     const r = await handleEndpoints({

@@ -261,7 +261,7 @@ export const keepHiddenBirthParent =
   }
 
 const REFUSED = 'Parent fields can’t be filtered or sorted.'
-const refused = () => new APIError(REFUSED, 400)
+export const refused = () => new APIError(REFUSED, 400)
 
 const COMPARE = new Set(['equals', 'in', 'not_equals', 'not_in'])
 /** Nesting of and, or and contains beyond this is refused, so a deep or cyclic where fails closed instead of overflowing the stack. */

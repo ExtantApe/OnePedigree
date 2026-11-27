@@ -354,3 +354,11 @@ Not covered: a real Next.js handler, and a database other than MongoDB.
 Covered (`hidden-parent-queries.shared.ts`, both modes), hidden vs made-up IDs giving the same answer: `herd[contains][dam|sire|clutch.mother|mate.dam][equals]` on find, count, versions (`version.herd`), bulk PATCH, `or`/`and` nesting, `in`, `not_equals`, and `exists` (only with placeholders); Local find, count, countVersions and update; readable IDs and ordinary inner fields still work; a join filter on a parent field is still refused.
 
 Not covered: a real Next.js handler, and a database other than MongoDB.
+
+## 2026-11-27: first query on a late collection
+
+Promise: when a later plugin replaces the database adapter and `onInit` is off, a query on a collection that plugin added can't tell a hidden parent from a made-up id, even as the first operation of the process.
+
+Covered: `guard-late-install-first-query-{find,count,sort,distinct}.test.ts` (one start each, seeded through the adapter so no guard hook has run; asserts the guard is absent before, the hidden and made-up answers are identical and are a refusal, and the guard is present after). All four failed on a9b7b69 and pass now. The full payload package suite passes (224 tests).
+
+Gaps skipped (and why): a late global's versions and a join from a late collection as the first operation (the same trip point, not exercised; each needs its own start); the admin permissions request before install (refused once, by design).
