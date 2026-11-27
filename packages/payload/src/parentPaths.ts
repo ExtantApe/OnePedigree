@@ -52,6 +52,20 @@ export const guardedPaths = (opts: ResolvedOptions, slug: string): string[] => {
   return m.kind === 'role-fields' ? Object.values(m.roles) : [`${m.path}.parents.${m.individualField}`, `${m.path}.mother`, `${m.path}.father`]
 }
 
+/** In a standard-fields install the parents are array rows. Everything in a row that can hold a hidden parent says that it exists. */
+export const guardedRowRoots = (opts: ResolvedOptions, slug: string): string[] => {
+  const m = opts.fields.parentage
+  return slug === opts.collection && m.kind !== 'role-fields' ? [`${m.path}.parents`] : []
+}
+
+/** The field itself and every field inside it, blocks included. */
+function withinField(payload: Payload, f: FlattenedField, out: Set<FlattenedField>): void {
+  if (out.has(f)) return
+  out.add(f)
+  for (const c of child(f)) withinField(payload, c, out)
+  for (const set of blockFields(f, payload)) for (const c of set) withinField(payload, c, out)
+}
+
 const guardedCache = new WeakMap<object, Map<string, Set<FlattenedField>>>()
 /** The parent field objects inside one field set (a collection's plain fields, or its version fields). */
 function guardedIn(payload: Payload, opts: ResolvedOptions, slug: string, set: FlattenedField[], prefix: string[]): Set<FlattenedField> {
@@ -62,6 +76,7 @@ function guardedIn(payload: Payload, opts: ResolvedOptions, slug: string, set: F
   if (!found) {
     found = new Set()
     for (const p of guardedPaths(opts, slug)) for (const f of fieldsAt(payload, set, [...prefix, ...p.split('.')])) found.add(f)
+    for (const p of guardedRowRoots(opts, slug)) for (const f of fieldsAt(payload, set, [...prefix, ...p.split('.')])) withinField(payload, f, found)
     byKey.set(key, found)
   }
   return found

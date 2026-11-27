@@ -63,6 +63,32 @@ export function standardFieldsTests(mode: Mode) {
     it('S3 REST count __ parents path', () => alike((v) => get(`/animals/count?where[parentage__parents__individual][equals]=${v}`)))
     it('S4 GraphQL __ parents path', () => alike((v) => gql(`{ Animals(where: { parentage__parents__individual: { equals: "${v}" } }) { totalDocs docs { name } } }`)))
     it('S5 GraphQL __ mother', () => alike((v) => gql(`{ Animals(where: { parentage__mother: { equals: "${v}" } }) { totalDocs docs { name } } }`)))
+    // A sibling field in the same row says that a hidden parent exists just as the relationship does.
+    for (const f of ['role', 'id'])
+      it(`S7 sibling ${f} in the row: filter, count and sort are refused, or answer the same`, async () => {
+        const refused = /can’t be filtered or sorted/
+        for (const op of ['exists', 'equals', 'not_equals', 'like'])
+          for (const key of [`parentage.parents.${f}`, `parentage__parents__${f}`]) {
+            const value = op === 'exists' ? 'true' : 'mother'
+            const r = await get(`/animals?depth=0&where[${key}][${op}]=${value}`)
+            // With placeholders the stored rows and the shown rows match, so `exists` is the one answer that is allowed.
+            if (op === 'exists' && mode === 'placeholder') expect(JSON.stringify(r.body), `${key} ${op}`).not.toMatch(refused)
+            else expect(JSON.stringify(r.body), `${key} ${op}`).toMatch(refused)
+          }
+        expect(JSON.stringify((await get(`/animals?depth=0&sort=parentage.parents.${f}`)).body)).toMatch(refused)
+        expect(JSON.stringify((await get(`/animals/count?where[parentage.parents.${f}][equals]=mother`)).body)).toMatch(refused)
+        expect(JSON.stringify((await get(`/animals?depth=0&sort=-parentage__parents__${f}`)).body)).toMatch(refused)
+      })
+    it('S8 the rows array itself, and GraphQL spellings of a sibling field', async () => {
+      const refused = /can’t be filtered or sorted/
+      expect(JSON.stringify((await get(`/animals?depth=0&where[parentage.parents][equals]=x`)).body)).toMatch(refused)
+      expect(JSON.stringify(await gql('{ Animals(where: { parentage__parents__role: { equals: mother } }) { totalDocs } }'))).toMatch(refused)
+      expect(JSON.stringify(await gql('{ Animals(where: { parentage__parents__id: { like: "x" } }) { totalDocs } }'))).toMatch(refused)
+    })
+    it('S9 fields that hold no parent are still filterable', async () => {
+      expect((await get(`/animals?depth=0&where[name][equals]=kid`)).status).toBe(200)
+      expect((await get(`/animals?depth=0&where[parentage.reproductiveMode][exists]=true`)).status).not.toBe(500)
+    })
     it('S6 sort by a parent field is refused', async () => {
       const r = await gql('{ Animals(sort: "parentage__mother") { docs { name } } }')
       expect(JSON.stringify(r)).toContain('can’t be filtered or sorted')
