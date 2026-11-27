@@ -105,6 +105,13 @@ export const onePedigree =
         )
     }
     if (!collections.some((c) => c.slug === opts.collection)) throw new Error(`OnePedigree: collection "${opts.collection}" not found`)
+    // A cohorts collection that only a later plugin adds would never get the birth parent hooks below, so a hidden
+    // birth parent would be read out of it unredacted. It has to exist by the time this plugin runs.
+    if (opts.cohorts && !collections.some((c) => c.slug === opts.cohorts!.collection))
+      throw new Error(`OnePedigree: cohorts collection "${opts.cohorts.collection}" not found. Add it before this plugin (or set cohorts.managed in managed mode), so its birth parent can be kept private.`)
+    // The redaction hooks this plugin puts on those two collections, checked again at start in case a later plugin replaced them.
+    const individualsAfterRead = parentageAfterRead(opts)
+    const cohortsAfterRead = birthParentAfterRead(opts)
 
     collections = collections.map((c): CollectionConfig => {
       if (c.slug === opts.collection) {
@@ -133,7 +140,7 @@ export const onePedigree =
             beforeChange: [...(c.hooks?.beforeChange ?? []), parentageBeforeChange(opts)],
             beforeDelete: [...(c.hooks?.beforeDelete ?? []), parentBeforeDelete(opts)],
             // Last, so host hooks never see a redacted value and nothing after it restores an ID.
-            afterRead: [...(c.hooks?.afterRead ?? []), parentageAfterRead(opts)],
+            afterRead: [...(c.hooks?.afterRead ?? []), individualsAfterRead],
           },
           endpoints: [...(Array.isArray(c.endpoints) ? c.endpoints : []), pedigreeEndpoint(opts), relativesEndpoint(opts), validateEndpoint(opts)],
         }
@@ -147,7 +154,7 @@ export const onePedigree =
             beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode],
             beforeValidate: [...(c.hooks?.beforeValidate ?? []), keepHiddenBirthParent(opts, TRUSTED, SKIP)],
             beforeChange: [...(c.hooks?.beforeChange ?? []), cohortBirthParentBeforeChange(opts)],
-            afterRead: [...(c.hooks?.afterRead ?? []), birthParentAfterRead(opts)],
+            afterRead: [...(c.hooks?.afterRead ?? []), cohortsAfterRead],
           },
         }
       return c
@@ -214,6 +221,13 @@ export const onePedigree =
           // Checked below.
         }
         if (!globalVersionsGuarded(g)) throw new Error(`OnePedigree: could not guard the versions of global "${g.slug}", so Payload won't start or answer queries without the guard.`)
+      }
+      // A later plugin can drop or replace the individuals or cohorts collection, taking this plugin's redaction with it.
+      const own: [string, unknown][] = [[opts.collection, individualsAfterRead], ...(opts.cohorts ? [[opts.cohorts.collection, cohortsAfterRead] as [string, unknown]] : [])]
+      for (const [slug, hook] of own) {
+        const found = finalCollections.filter((c) => c.slug === slug)
+        if (!found.length || found.some((c) => !((c.hooks?.afterRead ?? []) as unknown[]).includes(hook)))
+          throw new Error(`OnePedigree: collection "${slug}" is missing or was replaced by a later plugin, so its parents can't be kept private. Payload won't start or answer queries until it carries this plugin's hooks.`)
       }
       assertResolverGuards(payload, opts)
       installedFor.add(payload.config)

@@ -362,3 +362,11 @@ Promise: when a later plugin replaces the database adapter and `onInit` is off, 
 Covered: `guard-late-install-first-query-{find,count,sort,distinct}.test.ts` (one start each, seeded through the adapter so no guard hook has run; asserts the guard is absent before, the hidden and made-up answers are identical and are a refusal, and the guard is present after). All four failed on a9b7b69 and pass now. The full payload package suite passes (224 tests).
 
 Gaps skipped (and why): a late global's versions and a join from a late collection as the first operation (the same trip point, not exercised; each needs its own start); the admin permissions request before install (refused once, by design).
+
+## 2026-11-27: configured collections and refusal clean-up
+
+Promise: a hidden birth parent is never read out of a cohorts collection that a later plugin added, dropped or replaced; the plugin refuses instead. Refusal tests leave no temp folders behind.
+
+Covered: `guard-configured-collections.test.ts`: a missing cohorts collection throws at config time; a later plugin adding it is refused in a normal start and with the adapter replaced and `onInit` off; a later plugin dropping it, or replacing the cohorts or individuals collection, is refused at start; in the replaced-adapter start, a replaced cohorts collection makes the first guarded operation (and the next) refuse; `assertResolverGuards` throws for each configured slug that isn't running. The round 1 `late-cohorts` probe now gets a refused start. `differential.fixture.ts` removes its uploads folder when the start throws, so `guard-late-install-locked` and `guard-resolver-copy` no longer leave one; checked by comparing the temp folder before and after two full runs.
+
+Gaps skipped (and why): a read of a replaced individuals or cohorts collection as the very first operation in the replaced-adapter start (no plugin code runs there, so there is nothing to test; the README states the limit); the Admin permissions request refused once in that start mode (by design, stated in the README, not exercised through the Admin panel).

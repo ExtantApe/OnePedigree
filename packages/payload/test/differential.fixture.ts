@@ -101,17 +101,25 @@ export type Ctx = Awaited<ReturnType<typeof startFixture>>
 export async function startFixture(hiddenRecords: Mode, options: { disableOnInit?: boolean; replaceDb?: boolean; unchainedInit?: boolean; lockedLate?: boolean; rawSeed?: boolean } = {}) {
   const uploads = mkdtempSync(join(tmpdir(), 'onepedigree-uploads-'))
   const photosWithDir = { ...photos, upload: { staticDir: uploads } } as CollectionConfig
-  const { payload, stop: stopPayload } = await startPayload({
-    localization: { locales: ['en', 'fr'], defaultLocale: 'en' },
-    collections: [usersCollection, animals, clutches, photosWithDir, weighings, pens],
-    globals: [featured, footer, chain],
-    plugins: [
-      onePedigree({ collection: 'animals', mode: 'mapped', fields: { label: 'name', parentage: { kind: 'role-fields', roles: { mother: 'dam', father: 'sire' }, cohort: 'clutch' } }, cohorts: { collection: 'clutches', birthParentField: 'mother' }, hiddenRecords }),
-      laterPlugin,
-      ...(options.unchainedInit ? [unchainedInit] : []),
-      ...(options.lockedLate ? [lockedLate] : []),
-    ],
-  }, options)
+  // A start that throws (a refusal test) never reaches stop(), so the folder is removed here before the error goes on.
+  let started: Awaited<ReturnType<typeof startPayload>>
+  try {
+    started = await startPayload({
+      localization: { locales: ['en', 'fr'], defaultLocale: 'en' },
+      collections: [usersCollection, animals, clutches, photosWithDir, weighings, pens],
+      globals: [featured, footer, chain],
+      plugins: [
+        onePedigree({ collection: 'animals', mode: 'mapped', fields: { label: 'name', parentage: { kind: 'role-fields', roles: { mother: 'dam', father: 'sire' }, cohort: 'clutch' } }, cohorts: { collection: 'clutches', birthParentField: 'mother' }, hiddenRecords }),
+        laterPlugin,
+        ...(options.unchainedInit ? [unchainedInit] : []),
+        ...(options.lockedLate ? [lockedLate] : []),
+      ],
+    }, options)
+  } catch (error) {
+    rmSync(uploads, { recursive: true, force: true })
+    throw error
+  }
+  const { payload, stop: stopPayload } = started
   const id: Record<string, string> = {}
   const mk = async (c: string, k: string, d: object = {}) => {
     // Raw seeding writes through the adapter, so no collection operation (and no guard hook) runs before the test's first query.

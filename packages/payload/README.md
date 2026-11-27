@@ -92,9 +92,23 @@ Collections and globals that a plugin adds after this one get the guard when the
 `onInit`, again after Payload's dev reload, and on the first operation on any collection that already has it. If the
 guard can't be put on one (for example its hook list is frozen), Payload refuses to start, or the operation is refused.
 A startup check also resolves each parent path and refuses to start if Payload's resolver doesn't hand back the guarded
-field, as a Payload version that returned copies would. One gap is left. If a later plugin replaces the database adapter
-with one that doesn't call this plugin's, and Payload starts with `onInit` off or replaced, the guard reaches a late
-collection only after the first operation on a collection this plugin already guards (any write counts), not before.
+field, as a Payload version that returned copies would.
+
+The individuals collection and the cohorts collection have to be in the config before this plugin runs. A cohorts
+collection that only a later plugin adds would miss the hooks that keep a hidden birth parent private, so the plugin
+throws when it can't find it. At start, it also refuses if a later plugin dropped either collection or replaced it
+with a copy that lacks this plugin's hooks.
+
+If a later plugin replaces the database adapter with one that doesn't call this plugin's, and Payload starts with
+`onInit` off or replaced, none of this plugin runs at start. The guard and these checks then run on the first
+operation on a collection this plugin guards, which then goes ahead guarded. If the first operation is instead a
+filter or sort from a collection a later plugin added that reaches into the individuals or cohorts collection, it
+installs the guard and is refused once, so its answer can't come from an unguarded install. In this start mode the
+first Admin panel request for the signed-in user's permissions is refused once in the same way, and works when it's
+retried.
+One gap is left in this start mode: if a later plugin replaced the individuals or cohorts collection outright, a read
+of that collection that comes before any other operation goes out without this plugin's hooks, because nothing of the
+plugin is left on it to notice. Don't replace those two collections in a later plugin.
 
 Versions of a global can't be filtered through a hook, because Payload doesn't run one for them. Instead, a global that
 refers to individuals (directly, or through relationship, upload or join fields) answers its version reads with

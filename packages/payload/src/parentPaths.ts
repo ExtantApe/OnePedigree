@@ -160,7 +160,8 @@ export const strongestHit = (rs: Resolved[]): Hit => rs.reduce<Hit>((h, r) => st
 export function assertResolverGuards(payload: Payload, opts: ResolvedOptions): void {
   const slugs = [opts.collection, ...(opts.cohorts ? [opts.cohorts.collection] : [])]
   for (const slug of slugs) {
-    if (!payload.collections[slug as never]) continue
+    // A configured collection that isn't running has no guard to check, and its parents would go out unchecked.
+    if (!payload.collections[slug as never]) throw new Error(`OnePedigree: collection "${slug}" isn't in the running config, so its parent fields can't be guarded.`)
     let sets: FieldSet[]
     try {
       sets = fieldSetsFor(payload, slug, 'read')
