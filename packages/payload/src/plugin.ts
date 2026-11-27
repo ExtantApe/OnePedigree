@@ -126,7 +126,7 @@ export const onePedigree =
           fields: [...fields, ...(opts.admin?.panel === false ? [] : [panelField(opts)])],
           hooks: {
             ...c.hooks,
-            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode, guardParentQueries(opts, 'individuals')],
+            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode],
             beforeValidate: [...(c.hooks?.beforeValidate ?? []), keepHiddenParents(opts, TRUSTED, SKIP)],
             beforeChange: [...(c.hooks?.beforeChange ?? []), parentageBeforeChange(opts)],
             beforeDelete: [...(c.hooks?.beforeDelete ?? []), parentBeforeDelete(opts)],
@@ -142,7 +142,7 @@ export const onePedigree =
           endpoints: [...(Array.isArray(c.endpoints) ? c.endpoints : []), cohortMembersEndpoint(opts)],
           hooks: {
             ...c.hooks,
-            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode, guardParentQueries(opts, 'cohorts')],
+            beforeOperation: [...(c.hooks?.beforeOperation ?? []), rememberAccessMode],
             beforeValidate: [...(c.hooks?.beforeValidate ?? []), keepHiddenBirthParent(opts, TRUSTED, SKIP)],
             beforeChange: [...(c.hooks?.beforeChange ?? []), cohortBirthParentBeforeChange(opts)],
             afterRead: [...(c.hooks?.afterRead ?? []), birthParentAfterRead(opts)],
@@ -150,6 +150,11 @@ export const onePedigree =
         }
       return c
     })
+    // Every collection, not only the individuals and cohorts: a query can reach a parent field through any relationship.
+    if (!opts.disabled) {
+      const guard = guardParentQueries(opts)
+      collections = collections.map((c): CollectionConfig => ({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
+    }
 
     const globals = [...(config.globals ?? [])]
     if (!opts.disabled) {

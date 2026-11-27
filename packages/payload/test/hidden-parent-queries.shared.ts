@@ -23,13 +23,19 @@ const fields = [
 const animals: CollectionConfig = {
   slug: 'animals',
   access: { read, create: write, update: write, delete: write },
-  fields: [...fields, { name: 'dam', type: 'relationship', relationTo: 'animals' }, { name: 'sire', type: 'relationship', relationTo: 'animals' }, { name: 'clutch', type: 'relationship', relationTo: 'clutches' }],
+  fields: [...fields, { name: 'dam', type: 'relationship', relationTo: 'animals' }, { name: 'sire', type: 'relationship', relationTo: 'animals' }, { name: 'clutch', type: 'relationship', relationTo: 'clutches' }, { name: 'mate', type: 'relationship', relationTo: 'animals' }, { name: 'kids', type: 'join', collection: 'animals', on: 'dam' } as never],
 }
 const clutches: CollectionConfig = {
   slug: 'clutches',
   access: { read, create: write, update: write, readVersions: write },
   versions: { maxPerDoc: 5 },
-  fields: [...fields, { name: 'mother', type: 'relationship', relationTo: 'animals' }],
+  fields: [...fields, { name: 'mother', type: 'relationship', relationTo: 'animals' }, { name: 'members', type: 'join', collection: 'animals', on: 'clutch' } as never],
+}
+/** A host collection that isn't the individuals or cohorts, but relates to them. */
+const weighings: CollectionConfig = {
+  slug: 'weighings',
+  access: { read: () => true, create: write },
+  fields: [{ name: 'name', type: 'text' }, { name: 'animal', type: 'relationship', relationTo: 'animals' }],
 }
 
 const NOBODY = '64b0000000000000000000aa'
@@ -66,7 +72,7 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
 
   beforeAll(async () => {
     ;({ payload, stop } = await startPayload({
-      collections: [usersCollection, animals, clutches],
+      collections: [usersCollection, animals, clutches, weighings],
       plugins: [onePedigree({ collection: 'animals', mode: 'mapped', fields: { label: 'name', parentage: { kind: 'role-fields', roles: { mother: 'dam', father: 'sire' }, cohort: 'clutch' } }, cohorts: { collection: 'clutches', birthParentField: 'mother' }, hiddenRecords })],
     }))
     viewer = (await payload.create({ collection: 'users', data: { email: 'v@example.com', password: 'a-long-test-password', role: 'viewer' } as never })) as TypedUser
@@ -81,6 +87,10 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     await mk('animals', 'kid', { clutch: id.C_hidden })
     await mk('animals', 'kid2', { dam: id.Mhidden })
     await mk('animals', 'kid3', { dam: id.Aaa })
+    await mk('animals', 'pal', { mate: id.kid })
+    await mk('animals', 'pal2', { mate: id.kid3 })
+    await mk('weighings', 'w1', { animal: id.kid })
+    await mk('weighings', 'w2', { animal: id.kid3 })
     await payload.update({ collection: 'clutches' as never, id: id.C_hidden!, data: { name: 'C_hidden' } as never })
   })
   afterAll(async () => stop?.())
@@ -169,6 +179,59 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     await expect(run({ where: { mother: { equals: id.Mhidden } } })).rejects.toThrow()
     await expect(payload.delete({ collection: 'animals' as never, where: { dam: { equals: id.Mhidden } } as never, overrideAccess: false, user: viewer })).rejects.toThrow()
     expect((await payload.findByID({ collection: 'clutches' as never, id: id.C_hidden!, overrideAccess: true })).name).toBe('C_hidden')
+  })
+
+  it('refuses a parent path reached from another collection, the same for hidden and made-up IDs (REST, count, sort)', async () => {
+    for (const path of ['animal.dam', 'animal.sire', 'animal.clutch.mother']) {
+      const q = (v: string) => `/weighings?depth=0&where[${path}][equals]=${v}`
+      expect((await get(q(id.Mhidden!))).status).toBe(400)
+      expect(await get(q(id.Mhidden!))).toEqual(await get(q(NOBODY)))
+      const c = (v: string) => `/weighings/count?where[${path}][equals]=${v}`
+      expect((await get(c(id.Mhidden!))).status).toBe(400)
+      expect(await get(c(id.Mhidden!))).toEqual(await get(c(NOBODY)))
+      expect((await get(`/weighings?depth=0&sort=${path}`)).status).toBe(400)
+      expect((await get(`/weighings?depth=0&sort=-${path}`)).status).toBe(400)
+    }
+    expect((await get('/weighings?depth=0&where[animal.dam.name][equals]=x')).status).toBe(400)
+    // Below a parent field is refused even with an ID the viewer can read.
+    expect((await get(`/weighings?depth=0&where[animal.dam.name][equals]=${id.Aaa}`)).status).toBe(400)
+    expect((await get(`/clutches?depth=0&where[mother.name][equals]=${id.Aaa}`)).status).toBe(400)
+  })
+  it('still lets another collection filter through a readable parent or an ordinary field', async () => {
+    expect(await names(`/weighings?depth=0&where[animal.dam][equals]=${id.Aaa}`)).toEqual(['w2'])
+    expect((await get('/weighings?depth=0&where[animal.name][equals]=kid&sort=animal.name')).status).toBe(200)
+  })
+  it('refuses a parent path through a relationship that is not a parent field (mate.dam)', async () => {
+    const q = (v: string) => `/animals?depth=0&where[mate.dam][equals]=${v}`
+    expect((await get(q(id.Mhidden!))).status).toBe(400)
+    expect(await get(q(id.Mhidden!))).toEqual(await get(q(NOBODY)))
+    expect((await get('/animals?depth=0&sort=mate.dam')).status).toBe(400)
+    expect(await names(`/animals?depth=0&where[mate.dam][equals]=${id.Aaa}`)).toEqual(['pal2'])
+    expect((await get('/animals?depth=0&where[mate.name][equals]=kid')).status).toBe(200)
+  })
+  it('refuses a hidden parent in the where or sort of a REST join, and allows a readable one', async () => {
+    const j = (v: string) => `/clutches?depth=1&where[name][equals]=C_hidden&joins[members][where][dam][equals]=${v}`
+    expect((await get(j(id.Mhidden!))).status).toBe(400)
+    expect(await get(j(id.Mhidden!))).toEqual(await get(j(NOBODY)))
+    expect((await get('/clutches?depth=1&joins[members][sort]=dam')).status).toBe(400)
+    expect((await get('/clutches?depth=1&joins[members][sort]=-dam')).status).toBe(400)
+    expect((await get(`/animals?depth=1&where[name][equals]=Aaa&joins[kids][where][sire][equals]=${id.Mhidden}`)).status).toBe(400)
+    expect((await get(`/clutches?depth=1&joins[members][where][dam][equals]=${id.Aaa}`)).status).toBe(200)
+    expect((await get('/clutches?depth=1&joins[members][sort]=name')).status).toBe(200)
+    await expect(payload.find({ collection: 'clutches' as never, joins: { members: { where: { dam: { equals: id.Mhidden } } } } as never, overrideAccess: false, user: viewer })).rejects.toThrow()
+  })
+  it('refuses a hidden parent in a GraphQL filter reached through another collection, as it does a join', async () => {
+    const g = (v: string) => gql(`{ Weighings(where: { animal__dam: { equals: "${v}" } }) { totalDocs } }`)
+    expect(await g(id.Mhidden!)).toEqual(await g(NOBODY))
+    expect(JSON.stringify((await g(id.Mhidden!)).body)).not.toContain('"totalDocs":1')
+    const j = (v: string) => gql(`{ Clutches(where: { name: { equals: "C_hidden" } }) { docs { members(where: { dam: { equals: "${v}" } }) { docs { name } } } } }`)
+    expect(await j(id.Mhidden!)).toEqual(await j(NOBODY))
+    expect(JSON.stringify((await j(id.Mhidden!)).body)).not.toContain('"kid"')
+  })
+  it('allows only equals, in, not_equals and not_in on a parent field, even with a readable ID', async () => {
+    for (const op of ['greater_than', 'greater_than_equal', 'less_than', 'less_than_equal', 'like', 'contains', 'all'])
+      for (const [coll, f] of [['clutches', 'mother'], ['animals', 'dam'], ['weighings', 'animal.dam']] as const)
+        expect((await get(`/${coll}?depth=0&where[${f}][${op}]=${id.Aaa}`)).status, `${coll} ${f} ${op}`).toBe(400)
   })
 
   it('refuses a cohort saved with a birthing parent the editor cannot read, the same for hidden and made-up IDs', async () => {

@@ -262,83 +262,139 @@ export const keepHiddenBirthParent =
 const REFUSED = 'Parent fields can’t be filtered or sorted.'
 const refused = () => new APIError(REFUSED, 400)
 
-/** The paths on a collection that name a parent: the individuals' parent fields and cohort birthing parent, or the cohorts' birthing parent. */
-const guardedPaths = (opts: ResolvedOptions, side: 'individuals' | 'cohorts'): string[] => {
+/** The parent paths on a collection: the individuals' parent fields and cohort birthing parent, or the cohorts' birthing parent. Empty elsewhere. */
+const guardedPaths = (opts: ResolvedOptions, slug: string): string[] => {
   const m = opts.fields.parentage
   const birth = opts.cohorts?.birthParentField
-  if (side === 'cohorts') return birth ? [birth] : []
+  if (opts.cohorts && slug === opts.cohorts.collection) return birth ? [birth] : []
+  if (slug !== opts.collection) return []
   const own = m.kind === 'role-fields' ? Object.values(m.roles) : [`${m.path}.parents.${m.individualField}`, `${m.path}.mother`, `${m.path}.father`]
   return birth && m.cohort ? [...own, `${m.cohort}.${birth}`] : own
 }
+
+type FieldLike = { type?: string; name?: string; relationTo?: string | string[]; collection?: string | string[]; fields?: FieldLike[]; tabs?: { name?: string; fields: FieldLike[] }[]; blocks?: { fields: FieldLike[] }[] }
+const asList = (v: string | string[] | undefined): string[] => (Array.isArray(v) ? v : v ? [v] : [])
+
+/** Every relationship and join field of a collection by dotted path, with the collections it points to. */
+const relationMap = (() => {
+  const cache = new WeakMap<object, Map<string, string[]>>()
+  const walk = (fields: FieldLike[], prefix: string, out: Map<string, string[]>): void => {
+    for (const f of fields) {
+      const path = f.name ? `${prefix}${f.name}` : null
+      if (path && (f.type === 'relationship' || f.type === 'upload') && f.relationTo) out.set(path, asList(f.relationTo))
+      if (path && f.type === 'join' && f.collection) out.set(path, asList(f.collection))
+      if (f.fields) walk(f.fields, path ? `${path}.` : prefix, out)
+      if (f.tabs) for (const t of f.tabs) walk(t.fields, t.name ? `${prefix}${t.name}.` : prefix, out)
+      if (f.blocks) for (const b of f.blocks) walk(b.fields, path ? `${path}.` : prefix, out)
+    }
+  }
+  return (fields: unknown): Map<string, string[]> => {
+    const key = fields as object
+    let m = cache.get(key)
+    if (!m) cache.set(key, (m = new Map())), walk(fields as FieldLike[], '', m)
+    return m
+  }
+})()
 
 const COMPARE = new Set(['equals', 'in', 'not_equals', 'not_in'])
 
 /**
  * Filtering or sorting by a parent field answers "is this hidden record the parent?" for any ID, or orders a hidden
- * parent among known ones. With access control on, on every read path (find, count, distinct, versions, GraphQL):
- * sorting and paths below a parent field are refused; `equals`, `in`, `not_equals` and `not_in` are allowed only when
- * every ID is one the requester can read, so a hidden ID and a made-up one get the same answer; `exists` and an empty
- * value only with `hiddenRecords: 'placeholder'`, where a hidden parent shows as a placeholder and counts as set.
+ * parent among known ones. This runs on every collection, because a path can reach a parent field through any
+ * relationship (`animal.dam`, `mate.dam`, `animal.clutch.mother`), and on joins, which skip the target's own hooks.
+ * With access control on, on every read path (find, count, distinct, versions, joins, GraphQL): sorting and paths
+ * below a parent field are refused; `equals`, `in`, `not_equals` and `not_in` are allowed only when every ID is one
+ * the requester can read, so a hidden ID and a made-up one get the same answer; `exists` and an empty value only with
+ * `hiddenRecords: 'placeholder'`, where a hidden parent shows as a placeholder and counts as set.
  */
 export const guardParentQueries =
-  (opts: ResolvedOptions, side: 'individuals' | 'cohorts'): CollectionBeforeOperationHook =>
-  async ({ args, operation }) => {
-    const a = args as { overrideAccess?: boolean; where?: unknown; sort?: unknown; field?: unknown; req?: PayloadRequest }
+  (opts: ResolvedOptions): CollectionBeforeOperationHook =>
+  async ({ args, operation, collection, req }) => {
+    const a = args as { overrideAccess?: boolean; where?: unknown; sort?: unknown; field?: unknown; joins?: unknown; req?: PayloadRequest }
     const ops = ['read', 'count', 'readDistinct', 'update', 'delete', 'countVersions']
     if (a.overrideAccess === true || !ops.includes(operation)) return args
-    const paths = guardedPaths(opts, side)
-    if (!paths.length) return args
-    // Payload reports findVersions as a plain read, so a version's fields (`version.<field>`) are treated like the document's.
-    const strip = (k: string) => (k.startsWith('version.') ? k.slice('version.'.length) : k)
+    const request = a.req ?? req
+    const collections = request?.payload?.collections as Record<string, { config: { fields: unknown } }> | undefined
+    const relations = (slug: string) => {
+      const c = collections?.[slug]
+      return c ? relationMap(c.config.fields) : new Map<string, string[]>()
+    }
     // 'exact' is the parent field itself; 'below' is a path through it (a join to the parent's own fields).
-    const classify = (raw: string): 'exact' | 'below' | null => {
-      const k = strip(raw)
-      for (const p of paths) {
-        if (k === p) return 'exact'
-        if (k.startsWith(`${p}.`)) return 'below'
+    const walkPath = (slug: string, segs: string[], depth: number): 'exact' | 'below' | null => {
+      if (depth > 8) return null
+      for (const p of guardedPaths(opts, slug)) {
+        const ps = p.split('.')
+        if (ps.every((x, n) => segs[n] === x)) return segs.length === ps.length ? 'exact' : 'below'
+      }
+      const rel = relations(slug)
+      for (let j = 1; j < segs.length; j++) {
+        const targets = rel.get(segs.slice(0, j).join('.'))
+        if (!targets) continue
+        // Polymorphic paths read `field.value.<path>`.
+        const rest = segs.slice(j)
+        for (const t of targets)
+          for (const r of [rest, rest[0] === 'value' ? rest.slice(1) : null]) {
+            const k = r && r.length ? walkPath(t, r, depth + 1) : null
+            if (k) return k
+          }
       }
       return null
     }
-    const sorts = (Array.isArray(a.sort) ? a.sort : typeof a.sort === 'string' ? a.sort.split(',') : []).map((x) => String(x).trim().replace(/^-/, ''))
-    if (sorts.some((k) => classify(k))) throw refused()
-    if (typeof a.field === 'string' && classify(a.field)) throw refused()
+    // Payload reports findVersions as a plain read, so a version's fields (`version.<field>`) are treated like the document's.
+    const classify = (slug: string, raw: string): 'exact' | 'below' | null => {
+      const segs = raw.split('.')
+      return walkPath(slug, segs, 0) ?? (segs[0] === 'version' ? walkPath(slug, segs.slice(1), 0) : null)
+    }
     const ids: string[] = []
-    const walk = (w: unknown): void => {
-      if (Array.isArray(w)) return w.forEach(walk)
-      if (!w || typeof w !== 'object') return
-      for (const [k, v] of Object.entries(w as Record<string, unknown>)) {
-        if (k === 'and' || k === 'or') {
-          walk(v)
-          continue
-        }
-        const kind = classify(k)
-        if (!kind) {
-          walk(v)
-          continue
-        }
-        if (kind === 'below' || !v || typeof v !== 'object' || Array.isArray(v)) throw refused()
-        for (const [op, operand] of Object.entries(v as Record<string, unknown>)) {
-          if (op === 'exists') {
-            if (opts.hiddenRecords !== 'placeholder') throw refused()
+    const check = (slug: string, where: unknown, sort: unknown): void => {
+      const sorts = (Array.isArray(sort) ? sort : typeof sort === 'string' ? sort.split(',') : []).map((x) => String(x).trim().replace(/^-/, ''))
+      if (sorts.some((k) => classify(slug, k))) throw refused()
+      const walk = (w: unknown): void => {
+        if (Array.isArray(w)) return w.forEach(walk)
+        if (!w || typeof w !== 'object') return
+        for (const [k, v] of Object.entries(w as Record<string, unknown>)) {
+          if (k === 'and' || k === 'or') {
+            walk(v)
             continue
           }
-          if (!COMPARE.has(op)) throw refused()
-          for (const o of Array.isArray(operand) ? operand : typeof operand === 'string' && (op === 'in' || op === 'not_in') ? operand.split(',') : [operand]) {
-            const id = idOf(o)
-            if (id === null) {
+          const kind = classify(slug, k)
+          if (!kind) {
+            walk(v)
+            continue
+          }
+          if (kind === 'below' || !v || typeof v !== 'object' || Array.isArray(v)) throw refused()
+          for (const [op, operand] of Object.entries(v as Record<string, unknown>)) {
+            if (op === 'exists') {
               if (opts.hiddenRecords !== 'placeholder') throw refused()
               continue
             }
-            ids.push(id)
+            if (!COMPARE.has(op)) throw refused()
+            for (const o of Array.isArray(operand) ? operand : typeof operand === 'string' && (op === 'in' || op === 'not_in') ? operand.split(',') : [operand]) {
+              const id = idOf(o)
+              if (id === null) {
+                if (opts.hiddenRecords !== 'placeholder') throw refused()
+                continue
+              }
+              ids.push(id)
+            }
           }
         }
       }
+      walk(where)
     }
-    walk(a.where)
+    const slug = collection.slug
+    if (typeof a.field === 'string' && classify(slug, a.field)) throw refused()
+    check(slug, a.where, a.sort)
+    // Joins: the REST and Local API run them without the target collection's own hooks, so their filter and sort are checked here.
+    if (a.joins && typeof a.joins === 'object')
+      for (const [name, j] of Object.entries(a.joins as Record<string, unknown>)) {
+        if (!j || typeof j !== 'object') continue
+        for (const target of relations(slug).get(name) ?? []) check(target, (j as { where?: unknown }).where, (j as { sort?: unknown }).sort)
+      }
     if (!ids.length) return args
-    if (!a.req) throw refused()
+    if (!request) throw refused()
     // An ID the database can't parse is as unreadable as a made-up one.
-    const ok = await readableIds(a.req, opts, ids).catch(() => new Set<string>())
+    const ok = await readableIds(request, opts, ids).catch(() => new Set<string>())
     if (ids.some((id) => !ok.has(id))) throw refused()
     return args
   }

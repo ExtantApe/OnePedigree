@@ -312,3 +312,17 @@ Covered (`packages/payload/test/hidden-parent-oracle.test.ts`, `operation-isolat
 Accepted and documented (README): the loop check walks descendants with full access but reports only through readable parents; the restrict-mode 409 on deleting a recorded parent does not depend on whether children are readable.
 
 Skipped: live REST and GraphQL requests for the cohort redaction (the Local API path runs the same hook; the individuals' redaction is covered over both).
+
+### 2026-11-26 round 4: queries from other collections, other paths and joins
+
+Promise: a hidden parent can't be probed through queries.
+
+Covered (`packages/payload/test/hidden-parent-queries.shared.ts`, run in `omit` and `placeholder` modes), each with hidden vs made-up IDs giving the same answer:
+- A collection other than the individuals and cohorts filtering or sorting by `animal.dam`, `animal.sire`, `animal.clutch.mother`, and counting by them (REST); `animal.dam.name` refused even with a readable ID.
+- `mate.dam`, a parent field reached through a relationship that is not a parent field.
+- REST and Local API joins: `joins[members][where][dam]`, `joins[kids][where][sire]` and join sorts; GraphQL join filter and a GraphQL filter through another collection.
+- The operator allow-list: `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `like`, `contains` and `all` are refused on a parent field with a readable ID, on three collections.
+- Readable parents still work, and so do ordinary fields and sorts.
+Mutants (guard code changed one way at a time) that the suite kills: no `version.` stripping, no `below` check, no count, no distinct, no sort, `exists` always allowed, no update or delete, other operators allowed, no ID check, no relationship walk, no joins, no join sort, no join where, no join field map. One survives on purpose: dropping the explicit cohort path, because the relationship walk reaches it anyway.
+
+Still not covered: a real Next.js GraphQL handler, a parent ID held in a plain text or JSON field (the guard follows relationship and join fields only), and block or array fields holding relationships beyond the dotted-path walk's reach. The README says so.
