@@ -4,9 +4,10 @@ import { createParentTermsPreferenceField } from '../src'
 import { buildConfig, createLocalReq, getPayload, type CollectionConfig, type Config, type Payload, type TypedUser } from 'payload'
 
 /** A real Payload instance on an in-memory MongoDB replica set (transactions on). */
-export async function startPayload(config: Omit<Config, 'db' | 'secret'>) {
+export async function startPayload(config: Omit<Config, 'db' | 'secret'>, options: { disableOnInit?: boolean } = {}) {
   const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
   const payload = await getPayload({
+    disableOnInit: options.disableOnInit,
     config: await buildConfig({
       ...config,
       secret: 'test-secret-not-for-production',
