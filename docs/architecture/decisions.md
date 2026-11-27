@@ -4,6 +4,7 @@ Decisions the owner made about OnePedigree, newest first, each with its date. Mo
 
 | Date | Decision |
 | --- | --- |
+| 2026-11-26 | **The query guard reads `__` as a dot:** Payload and the MongoDB adapter turn a double underscore in a filter, sort, distinct field or join name into a dot (GraphQL writes group fields that way), so the guard normalizes keys the same way before it classifies them. Normalizing was chosen over refusing keys that contain `__`, because GraphQL uses `__` for every group field and refusing it would break harmless filters on ordinary fields; normalizing matches what the database will actually run. In `placeholder` mode only an exact `{ private: true }` counts as an empty operand. |
 | 2026-11-21 | **Core exports its own version:** `CORE_VERSION` in `@extantape/onepedigree-core`, equal to its `package.json` version, so a host can record which version of the arithmetic produced a result. Kept as a one-line `version.ts`, bumped with the release and checked by a test, because the build (tsup) has no define step and importing `package.json` at runtime would break bundlers. Asked for by a host site. |
 | 2026-11-14 | **EXTANT APE owns OnePedigree:** the repo moves to `ExtantApe/OnePedigree` and the packages publish under `@extantape`, from 0.1.0-alpha.22. The old package names get deprecated with a pointer to the new ones. The owner approved the move. Relayed. |
 | 2026-11-10 | **The studbook package name:** `onepedigree-studbook`. The owner chose "Yes, that name (Recommended)" when asked, before its first publish. Relayed. |

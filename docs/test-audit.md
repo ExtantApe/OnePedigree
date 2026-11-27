@@ -332,3 +332,11 @@ Still not covered: a real Next.js GraphQL handler, a parent ID held in a plain t
 Covered (same shared file, both modes): paths of 8, 9 and 12 hops on find, count, sort and Local find; a collection added by a plugin after OnePedigree (filter, count, sort); object operands without an ID in `in`, `equals` and `not_in`, and a 1001-item Local list ending in one; `exists` on the individuals, cohorts, a related collection and a later one (mutant "exists always allowed" is now killed by two tests). Mutants killed: depth limit returns null, empty-operand check removed, late guard removed, `exists` always allowed.
 
 Not covered: a database other than MongoDB, and a real Next.js handler.
+
+### 2026-11-26 round 6: double underscore paths
+
+Promise: a hidden parent can't be probed through a `__` spelling of a path.
+
+Covered (`hidden-parent-queries.shared.ts` and `hidden-parent-underscore-standard.shared.ts`, both modes), hidden vs made-up IDs giving the same answer: `__` in REST filters, counts and sorts (role fields, other collections, a later plugin's collection, mixed `.` and `__`); versions, REST join filters and sorts, bulk PATCH and DELETE; Local find, count, countVersions, update, delete, joins and distinct; GraphQL filters, count, sort; `exists` through `__` only with placeholders; on a standard-fields install, `parentage__parents__individual`, `parentage__mother` over REST, count, sort, versions, bulk, Local and GraphQL; a placeholder-shaped operand with extra keys. Readable IDs and ordinary `__` fields still work.
+
+Not covered: a real Next.js handler, and a database other than MongoDB.

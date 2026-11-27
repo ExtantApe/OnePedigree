@@ -342,8 +342,12 @@ export const guardParentQueries =
       return null
     }
     // Payload reports findVersions as a plain read, so a version's fields (`version.<field>`) are treated like the document's.
+    // Payload and the Mongo adapter read a double underscore as a dot (GraphQL's group separator), so `animal__dam` is
+    // `animal.dam`. Keys are normalized the same way before they are classified, rather than refused: GraphQL uses `__`
+    // for every group field, so refusing it would also break harmless filters on ordinary fields.
+    const dotted = (raw: string): string => raw.replace(/__/g, '.')
     const classify = (slug: string, raw: string): 'exact' | 'below' | null => {
-      const segs = raw.split('.')
+      const segs = dotted(raw).split('.')
       return walkPath(slug, segs, 0) ?? (segs[0] === 'version' ? walkPath(slug, segs.slice(1), 0) : null)
     }
     const ids: string[] = []
@@ -374,7 +378,7 @@ export const guardParentQueries =
               const id = idOf(o)
               if (id === null) {
                 // Only an empty value or a placeholder is an empty operand; any other object (or a list of them) is refused.
-                const empty = o === null || o === undefined || o === '' || isPrivateParent(o)
+                const empty = o === null || o === undefined || o === '' || (isPrivateParent(o) && Object.keys(o).length === 1)
                 if (!empty || opts.hiddenRecords !== 'placeholder') throw refused()
                 continue
               }
@@ -392,7 +396,7 @@ export const guardParentQueries =
     if (a.joins && typeof a.joins === 'object')
       for (const [name, j] of Object.entries(a.joins as Record<string, unknown>)) {
         if (!j || typeof j !== 'object') continue
-        for (const target of relations(slug).get(name) ?? []) check(target, (j as { where?: unknown }).where, (j as { sort?: unknown }).sort)
+        for (const target of relations(slug).get(dotted(name)) ?? []) check(target, (j as { where?: unknown }).where, (j as { sort?: unknown }).sort)
       }
     if (!ids.length) return args
     if (!request) throw refused()

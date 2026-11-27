@@ -277,6 +277,84 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     else await expect(local).rejects.toThrow()
   })
 
+  // Payload and the database adapter turn `__` into `.` (GraphQL's group separator), so these spellings reach the same fields.
+  const same = async (path: (v: string) => string, init?: RequestInit) => {
+    const [h, n] = [await call(path(id.Mhidden!), init), await call(path(NOBODY), init)]
+    expect(h.status, path(id.Mhidden!)).toBe(400)
+    expect(h).toEqual(n)
+  }
+  it('treats a double underscore as a dot in REST filters, counts and sorts, for role fields and other collections', async () => {
+    for (const f of ['dam', 'sire']) await same((v) => `/animals?depth=0&where[${f}][equals]=${v}`)
+    for (const f of ['animal__dam', 'animal__sire', 'animal__clutch__mother', 'animal.clutch__mother', 'animal__clutch.mother']) {
+      await same((v) => `/weighings?depth=0&where[${f}][equals]=${v}`)
+      await same((v) => `/weighings/count?where[${f}][equals]=${v}`)
+      expect((await get(`/weighings?depth=0&sort=${f}`)).status, f).toBe(400)
+    }
+    await same((v) => `/animals?depth=0&where[mate__dam][equals]=${v}`)
+    await same((v) => `/animals/count?where[mate__dam][equals]=${v}`)
+    await same((v) => `/notes?depth=0&where[animal__dam][equals]=${v}`)
+    await same((v) => `/animals?depth=0&where[clutch__mother][equals]=${v}`)
+    await same((v) => `/animals?depth=0&where[or][0][mate__dam][equals]=${v}`)
+    expect((await get('/animals?depth=0&sort=-mate__dam')).status).toBe(400)
+    expect((await get(`/weighings?depth=0&where[animal__dam__name][equals]=${id.Aaa}`)).status).toBe(400)
+    expect((await get(`/animals?depth=0&where[mate__dam][like]=${id.Aaa}`)).status).toBe(400)
+    // Readable IDs and ordinary fields still work.
+    expect(await names(`/animals?depth=0&where[mate__dam][equals]=${id.Aaa}`)).toEqual(['pal2'])
+    expect(await names(`/weighings?depth=0&where[animal__dam][equals]=${id.Aaa}`)).toEqual(['w2'])
+    expect((await get('/animals?depth=0&where[mate__name][equals]=kid&sort=mate__name')).status).toBe(200)
+  })
+  it('treats a double underscore as a dot in versions, joins and bulk changes', async () => {
+    await same((v) => `/clutches/versions?depth=0&where[version__mother][equals]=${v}`)
+    expect((await get('/clutches/versions?depth=0&sort=version__mother')).status).toBe(400)
+    expect((await get(`/clutches/versions?depth=0&where[version__mother][equals]=${id.Aaa}`)).status).toBe(200)
+    await same((v) => `/clutches?depth=1&where[name][equals]=C_hidden&joins[members][where][clutch__mother][equals]=${v}`)
+    await same((v) => `/clutches?depth=1&where[name][equals]=C_hidden&joins[members][where][mate__dam][equals]=${v}`)
+    expect((await get('/clutches?depth=1&joins[members][sort]=mate__dam')).status).toBe(400)
+    await same((v) => `/animals?depth=0&where[mate__dam][equals]=${v}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    await same((v) => `/animals?depth=0&where[mate__dam][equals]=${v}`, { method: 'DELETE' })
+    expect((await get(`/clutches?depth=1&joins[members][where][mate__dam][equals]=${id.Aaa}`)).status).toBe(200)
+  })
+  it('treats a double underscore as a dot in Local API reads, bulk changes and distinct lists', async () => {
+    const as = { overrideAccess: false, user: viewer }
+    for (const v of [id.Mhidden!, NOBODY]) {
+      await expect(payload.find({ collection: 'animals' as never, where: { mate__dam: { equals: v } } as never, ...as })).rejects.toThrow()
+      await expect(payload.count({ collection: 'animals' as never, where: { mate__dam: { equals: v } } as never, ...as })).rejects.toThrow()
+      await expect(payload.find({ collection: 'weighings' as never, where: { animal__clutch__mother: { equals: v } } as never, ...as })).rejects.toThrow()
+      await expect(payload.countVersions({ collection: 'clutches' as never, where: { version__mother: { equals: v } } as never, ...as })).rejects.toThrow()
+      await expect(payload.update({ collection: 'animals' as never, data: { name: 'x' } as never, where: { mate__dam: { equals: v } } as never, ...as })).rejects.toThrow()
+      await expect(payload.delete({ collection: 'animals' as never, where: { mate__dam: { equals: v } } as never, ...as })).rejects.toThrow()
+      await expect(payload.find({ collection: 'clutches' as never, joins: { members: { where: { mate__dam: { equals: v } } } } as never, ...as })).rejects.toThrow()
+    }
+    for (const [collection, field] of [['animals', 'mate__dam'], ['animals', 'clutch__mother'], ['weighings', 'animal__dam']] as const)
+      await expect(local({ collection, field, overrideAccess: false, user: viewer })).rejects.toThrow()
+    await expect(payload.find({ collection: 'animals' as never, where: { mate__dam: { equals: id.Aaa } } as never, ...as })).resolves.toBeTruthy()
+    expect((await payload.findByID({ collection: 'animals' as never, id: id.kid2!, overrideAccess: true })).name).toBe('kid2')
+  })
+  it('allows exists through a double underscore only with placeholders, like the dotted path', async () => {
+    const want = hiddenRecords === 'placeholder' ? 200 : 400
+    for (const p of ['/animals?depth=0&where[mate__dam][exists]=true', '/animals/count?where[mate__dam][exists]=false', '/weighings?depth=0&where[animal__dam][exists]=true', '/notes?depth=0&where[animal__dam][exists]=true'])
+      expect((await get(p)).status, p).toBe(want)
+  })
+  it('treats a double underscore as a dot in GraphQL filters, sorts and joins', async () => {
+    const eq = async (q: (v: string) => string) => {
+      const [h, n] = [await gql(q(id.Mhidden!)), await gql(q(NOBODY))]
+      expect(h.body.errors?.length, q('x')).toBeGreaterThan(0)
+      expect(h).toEqual(n)
+    }
+    await eq((v) => `{ Animals(where: { mate__dam: { equals: "${v}" } }) { totalDocs } }`)
+    await eq((v) => `{ Animals(where: { clutch__mother: { equals: "${v}" } }) { docs { name } } }`)
+    await eq((v) => `{ countAnimals(where: { mate__dam: { equals: "${v}" } }) { totalDocs } }`)
+    await eq((v) => `{ Weighings(where: { animal__clutch__mother: { equals: "${v}" } }) { totalDocs } }`)
+    expect((await gql('{ Animals(sort: "mate__dam") { docs { name } } }')).body.errors?.length).toBeGreaterThan(0)
+  })
+  it('refuses a placeholder-shaped operand that carries more than the placeholder, in every mode', async () => {
+    const as = { overrideAccess: false, user: viewer }
+    const extra = { private: true, relationTo: 'animals', value: id.Mhidden }
+    await expect(payload.find({ collection: 'animals' as never, where: { dam: { equals: extra } } as never, ...as })).rejects.toThrow()
+    await expect(payload.find({ collection: 'animals' as never, where: { dam: { in: [extra] } } as never, ...as })).rejects.toThrow()
+    expect((await get(`/animals?depth=0&where[dam][equals][private]=true&where[dam][equals][value]=${id.Mhidden}`)).status).toBe(400)
+  })
+
   it('refuses a cohort saved with a birthing parent the editor cannot read, the same for hidden and made-up IDs', async () => {
     const msg = async (mother: string, id2?: string) => {
       try {
