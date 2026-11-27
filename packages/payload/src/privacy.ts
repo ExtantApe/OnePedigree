@@ -321,7 +321,8 @@ export const guardParentQueries =
     }
     // 'exact' is the parent field itself; 'below' is a path through it (a join to the parent's own fields).
     const walkPath = (slug: string, segs: string[], depth: number): 'exact' | 'below' | null => {
-      if (depth > 8) return null
+      // Fail closed: a path this long is refused, not let through unchecked.
+      if (depth > 8) throw refused()
       for (const p of guardedPaths(opts, slug)) {
         const ps = p.split('.')
         if (ps.every((x, n) => segs[n] === x)) return segs.length === ps.length ? 'exact' : 'below'
@@ -372,7 +373,9 @@ export const guardParentQueries =
             for (const o of Array.isArray(operand) ? operand : typeof operand === 'string' && (op === 'in' || op === 'not_in') ? operand.split(',') : [operand]) {
               const id = idOf(o)
               if (id === null) {
-                if (opts.hiddenRecords !== 'placeholder') throw refused()
+                // Only an empty value or a placeholder is an empty operand; any other object (or a list of them) is refused.
+                const empty = o === null || o === undefined || o === '' || isPrivateParent(o)
+                if (!empty || opts.hiddenRecords !== 'placeholder') throw refused()
                 continue
               }
               ids.push(id)

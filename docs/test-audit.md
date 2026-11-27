@@ -326,3 +326,9 @@ Covered (`packages/payload/test/hidden-parent-queries.shared.ts`, run in `omit` 
 Mutants (guard code changed one way at a time) that the suite kills: no `version.` stripping, no `below` check, no count, no distinct, no sort, `exists` always allowed, no update or delete, other operators allowed, no ID check, no relationship walk, no joins, no join sort, no join where, no join field map. One survives on purpose: dropping the explicit cohort path, because the relationship walk reaches it anyway.
 
 Still not covered: a real Next.js GraphQL handler, a parent ID held in a plain text or JSON field (the guard follows relationship and join fields only), and block or array fields holding relationships beyond the dotted-path walk's reach. The README says so.
+
+### 2026-11-26 round 5: long paths, later plugins, odd operands
+
+Covered (same shared file, both modes): paths of 8, 9 and 12 hops on find, count, sort and Local find; a collection added by a plugin after OnePedigree (filter, count, sort); object operands without an ID in `in`, `equals` and `not_in`, and a 1001-item Local list ending in one; `exists` on the individuals, cohorts, a related collection and a later one (mutant "exists always allowed" is now killed by two tests). Mutants killed: depth limit returns null, empty-operand check removed, late guard removed, `exists` always allowed.
+
+Not covered: a database other than MongoDB, and a real Next.js handler.

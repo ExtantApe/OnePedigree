@@ -75,8 +75,9 @@ With access control on, sorting by a parent field (the cohort's birthing parent,
 distinct values and filtering below it are refused with a 400. `equals`, `in`, `not_equals` and `not_in` work only
 with IDs the requester can read, so a hidden ID and a made-up one get the same answer. `exists` works only with
 `hiddenRecords: 'placeholder'`. This covers versions, count, bulk update and delete, REST joins, and any path
-that reaches a parent field through a relationship, from any collection in the host (`animal.dam`, `mate.dam`,
-`animal.clutch.mother`). Only paths that follow relationship fields are followed, so a host that stores a parent ID
+that reaches a parent field through a relationship, from any collection in the host, including one a plugin
+adds after this one (`animal.dam`, `mate.dam`, `animal.clutch.mother`). A path of more than eight relationship hops
+is refused, and so is an operand that is an object without an ID. Only paths that follow relationship fields are followed, so a host that stores a parent ID
 in a plain text or JSON field has to guard that itself. Saving a
 cohort with a birthing parent the editor can't read is refused.
 

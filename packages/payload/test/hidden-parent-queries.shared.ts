@@ -1,6 +1,6 @@
 import { configToSchema } from '@payloadcms/graphql'
 import { createRequire } from 'node:module'
-import { createLocalReq, handleEndpoints, type Access, type CollectionConfig, type Payload, type TypedUser, type Where } from 'payload'
+import { createLocalReq, handleEndpoints, type Access, type CollectionConfig, type Config, type Payload, type TypedUser, type Where } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { onePedigree } from '../src'
@@ -38,6 +38,10 @@ const weighings: CollectionConfig = {
   fields: [{ name: 'name', type: 'text' }, { name: 'animal', type: 'relationship', relationTo: 'animals' }],
 }
 
+/** A collection added by a plugin that runs after OnePedigree, so it is not in the config OnePedigree sees. */
+const notes: CollectionConfig = { slug: 'notes', access: { read: () => true, create: write }, fields: [{ name: 'name', type: 'text' }, { name: 'animal', type: 'relationship', relationTo: 'animals' }] }
+const laterPlugin = (config: Config): Config => ({ ...config, collections: [...(config.collections ?? []), notes] })
+
 const NOBODY = '64b0000000000000000000aa'
 type Body = { docs?: { name: string }[]; totalDocs?: number; errors?: unknown[]; data?: Record<string, { docs?: { name: string }[]; totalDocs?: number }> }
 
@@ -73,7 +77,7 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
   beforeAll(async () => {
     ;({ payload, stop } = await startPayload({
       collections: [usersCollection, animals, clutches, weighings],
-      plugins: [onePedigree({ collection: 'animals', mode: 'mapped', fields: { label: 'name', parentage: { kind: 'role-fields', roles: { mother: 'dam', father: 'sire' }, cohort: 'clutch' } }, cohorts: { collection: 'clutches', birthParentField: 'mother' }, hiddenRecords })],
+      plugins: [onePedigree({ collection: 'animals', mode: 'mapped', fields: { label: 'name', parentage: { kind: 'role-fields', roles: { mother: 'dam', father: 'sire' }, cohort: 'clutch' } }, cohorts: { collection: 'clutches', birthParentField: 'mother' }, hiddenRecords }), laterPlugin],
     }))
     viewer = (await payload.create({ collection: 'users', data: { email: 'v@example.com', password: 'a-long-test-password', role: 'viewer' } as never })) as TypedUser
     const login = await call('/users/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'v@example.com', password: 'a-long-test-password' }) }, false)
@@ -91,6 +95,7 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     await mk('animals', 'pal2', { mate: id.kid3 })
     await mk('weighings', 'w1', { animal: id.kid })
     await mk('weighings', 'w2', { animal: id.kid3 })
+    await mk('notes', 'n1', { animal: id.kid })
     await payload.update({ collection: 'clutches' as never, id: id.C_hidden!, data: { name: 'C_hidden' } as never })
   })
   afterAll(async () => stop?.())
@@ -232,6 +237,44 @@ export const hiddenParentQueryTests = (hiddenRecords: 'omit' | 'placeholder') =>
     for (const op of ['greater_than', 'greater_than_equal', 'less_than', 'less_than_equal', 'like', 'contains', 'all'])
       for (const [coll, f] of [['clutches', 'mother'], ['animals', 'dam'], ['weighings', 'animal.dam']] as const)
         expect((await get(`/${coll}?depth=0&where[${f}][${op}]=${id.Aaa}`)).status, `${coll} ${f} ${op}`).toBe(400)
+  })
+
+  it('refuses a path of nine or more relationship hops instead of letting it through', async () => {
+    const chain = (n: number) => Array(n).fill('mate').join('.')
+    for (const hops of [8, 9, 12]) {
+      const q = (v: string) => `/animals?depth=0&where[${chain(hops)}.dam][equals]=${v}`
+      expect((await get(q(id.Mhidden!))).status, `${hops} hops`).toBe(400)
+      expect(await get(q(id.Mhidden!))).toEqual(await get(q(NOBODY)))
+    }
+    expect((await get(`/animals/count?where[${chain(9)}.dam][equals]=${id.Mhidden}`)).status).toBe(400)
+    expect((await get(`/animals?depth=0&sort=${chain(9)}.dam`)).status).toBe(400)
+    await expect(payload.find({ collection: 'animals' as never, where: { [`${chain(9)}.dam`]: { equals: id.Mhidden } } as never, overrideAccess: false, user: viewer })).rejects.toThrow()
+  })
+  it('guards a collection that a later plugin adds, on filter, count and sort', async () => {
+    const q = (v: string) => `/notes?depth=0&where[animal.dam][equals]=${v}`
+    expect((await get(q(id.Mhidden!))).status).toBe(400)
+    expect(await get(q(id.Mhidden!))).toEqual(await get(q(NOBODY)))
+    expect((await get(`/notes/count?where[animal.dam][equals]=${id.Mhidden}`)).status).toBe(400)
+    expect((await get('/notes?depth=0&sort=animal.dam')).status).toBe(400)
+    expect(await names(`/notes?depth=0&where[animal.dam][equals]=${id.Aaa}`)).toEqual([])
+    expect((await get('/notes?depth=0&where[animal.name][equals]=kid')).status).toBe(200)
+  })
+  it('refuses an operand that is an object without an ID or a list of them, in every mode', async () => {
+    for (const w of ['where[dam][in][a]=x', 'where[dam][in][0][a]=x', 'where[dam][equals][a]=x', 'where[dam][not_in][0][b][c]=x', `where[dam][in][0]=${id.Aaa}&where[dam][in][1][a]=x`])
+      expect((await get(`/animals?depth=0&${w}`)).status, w).toBe(400)
+    // Payload's query parser drops entries past index 1000 over REST, so a long list is tested through the Local API.
+    const long = [...Array(1000).fill(id.Aaa), { a: 1 }]
+    await expect(payload.find({ collection: 'animals' as never, where: { dam: { in: long } } as never, overrideAccess: false, user: viewer })).rejects.toThrow()
+    await expect(payload.find({ collection: 'animals' as never, where: { dam: { in: { a: 1 } } } as never, overrideAccess: false, user: viewer })).rejects.toThrow()
+    await expect(payload.find({ collection: 'animals' as never, where: { dam: { in: [{ a: 1 }] } } as never, overrideAccess: false, user: viewer })).rejects.toThrow()
+  })
+  it('allows exists on a parent field only with placeholders, from the individuals, the cohorts and another collection', async () => {
+    const want = hiddenRecords === 'placeholder' ? 200 : 400
+    for (const p of ['/animals?depth=0&where[dam][exists]=true', '/animals?depth=0&where[dam][exists]=false', '/animals/count?where[dam][exists]=true', '/clutches?depth=0&where[mother][exists]=false', '/weighings?depth=0&where[animal.dam][exists]=true', '/notes?depth=0&where[animal.dam][exists]=true'])
+      expect((await get(p)).status, p).toBe(want)
+    const local = payload.find({ collection: 'animals' as never, where: { dam: { exists: true } } as never, overrideAccess: false, user: viewer })
+    if (hiddenRecords === 'placeholder') await expect(local).resolves.toBeTruthy()
+    else await expect(local).rejects.toThrow()
   })
 
   it('refuses a cohort saved with a birthing parent the editor cannot read, the same for hidden and made-up IDs', async () => {

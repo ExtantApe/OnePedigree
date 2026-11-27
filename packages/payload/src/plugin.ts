@@ -151,8 +151,8 @@ export const onePedigree =
       return c
     })
     // Every collection, not only the individuals and cohorts: a query can reach a parent field through any relationship.
+    const guard = guardParentQueries(opts)
     if (!opts.disabled) {
-      const guard = guardParentQueries(opts)
       collections = collections.map((c): CollectionConfig => ({ ...c, hooks: { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), guard] } }))
     }
 
@@ -166,6 +166,14 @@ export const onePedigree =
     const onInit: Config['onInit'] = async (payload) => {
       await config.onInit?.(payload)
       if (opts.disabled) return
+      // A collection added by a plugin that runs after this one isn't in the list above. Hooks are read from the
+      // final config on each operation, so it gets the guard here, once it exists.
+      const finalCollections = [...(payload.config.collections ?? []), ...Object.values(payload.collections ?? {}).map((c) => c.config)]
+      for (const c of new Set(finalCollections)) {
+        const hooks = (c.hooks ??= {} as never) as { beforeOperation?: unknown[] }
+        const list = (hooks.beforeOperation ??= [])
+        if (!list.includes(guard)) list.push(guard)
+      }
       // Retried: on a fresh database this can race other startup writes creating the same
       // MongoDB collection (a transient transaction error). Startup is never blocked by it.
       for (let attempt = 1; attempt <= 5; attempt++)
