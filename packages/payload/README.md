@@ -72,14 +72,27 @@ access overridden is checked against everything. A hidden birthing parent comes 
 cohort reads as `{ "private": true }` (null in GraphQL, or with `hiddenRecords: 'omit'`), is kept
 as stored when an editor saves the cohort, and a hidden birthing parent can't be probed through queries.
 With access control on, sorting by a parent field (the cohort's birthing parent, `dam`, `sire`), listing its
-distinct values and filtering below it are refused with a 400. `equals`, `in`, `not_equals` and `not_in` work only
-with IDs the requester can read, so a hidden ID and a made-up one get the same answer. `exists` works only with
-`hiddenRecords: 'placeholder'`. This covers versions, count, bulk update and delete, REST joins, and any path
-that reaches a parent field through a relationship, from any collection in the host, including one a plugin
-adds after this one (`animal.dam`, `mate.dam`, `animal.clutch.mother`), and a nested filter on a relationship (`herd[contains][dam][equals]`), which is checked against the related collection. A path of more than eight relationship hops
-is refused, and so is an operand that is an object without an ID. Only paths that follow relationship fields are followed, so a host that stores a parent ID
-in a plain text or JSON field has to guard that itself. Saving a
-cohort with a birthing parent the editor can't read is refused.
+distinct values and filtering below it (`dam.name`) are refused with a 400. `equals`, `in`, `not_equals` and `not_in`
+work only with IDs the requester can read, so a hidden ID and a made-up one get the same answer. `exists` works only
+with `hiddenRecords: 'placeholder'`.
+
+The guard asks Payload's own path resolver what each filter key means, so `dam`, `lherd.en`, `animal__dam` and
+`version.animal.dam` are the same field to the guard that they are to the database. It runs on every collection in the
+host, including ones a plugin adds after this one and Payload's own, on find, count, versions, count of versions,
+distinct values, bulk update and delete, REST and Local joins, and GraphQL. A key that doesn't resolve is refused. So is a
+path of more than eight relationship hops, a where nested deeper than 32 levels, and an object under a relationship
+that is neither Payload's nested `contains` (which is checked against the related collection) nor a plain
+`{ relationTo, value }` reference. Only paths that follow relationship fields are followed, so a host that stores a
+parent ID in a plain text or JSON field has to guard that itself.
+
+Versions of a global can't be filtered through a hook, because Payload doesn't run one for them. Instead, a global that
+refers to individuals (directly, or through relationship, upload or join fields) answers its version reads with
+`false` for a requester who can't read every individual. Those requesters lose the version history of such a global,
+in the Admin UI too. A host that needs partial readers to see it can read the versions in its own server code and shape
+the answer. Globals with no such reference keep the host's own `readVersions` rule. This needs Payload 3.92 (the peer
+range is `~3.92.1`), because the guard depends on the shape of its resolver; the range widens one minor at a time.
+
+Saving a cohort with a birthing parent the editor can't read is refused.
 
 ## Integrity
 

@@ -1,6 +1,6 @@
 # Hidden-parents query guard: resolve paths with Payload's own resolver
 
-Status: reviewed, revision 2, ready to build. Package: `packages/payload`. Written 2026-11-26, revised after the reviewer's note the same day.
+Status: built, revision 3 (what the build found is under "What the build found"). Package: `packages/payload`. Written 2026-11-26, revised after the reviewer's note the same day.
 
 ## Why
 
@@ -116,7 +116,7 @@ New `test/hidden-parent-differential.test.ts` (shared body, one file per `hidden
 - **Difference rows:** where the case says a readable-parent caller must differ (the readable id answers differently from `N`), the test asserts it, so a guard that refuses everything cannot pass. For exposed globals the difference row uses a caller who can read every individual (partial readers are refused by design, section 3).
 - **Fixed expectations from the confirmed leaks.** L1, L2, L4 to L7, K3, L9, G1, G3, G4, J9 and J11 are named rows that fail on 88ff1c1 and 2816d47. K8 (`exists` on `lherd.en.dam`) is run, its output recorded, and the test asserts what the investigation finds.
 - **Generated rows** from the sanitized config: for every path that reaches a parent field (found by walking `flattenedFields`, not hand-listed), the dot, `__` and mixed spellings, every locale code as trailing and middle segment, the `version.` and `version__` prefixes, the operator forms `equals`, `in` (array and comma string), `not_equals`, `not_in`, `exists` and `contains` with nested `and`, `or` (any case), `in` and a second hop, sort and distinct forms, and join names as given. They run through REST (list, count, versions, bulk PATCH, `/globals/.../versions`), Local and GraphQL.
-- **Mutants:** a script (`scripts/mutants.sh` inside the package, not shipped) applies each mutant to `src` in a temporary copy, runs the suite and requires failures, then restores. The mutants are the reviewer's lists (r4 G1 to G15, r5 R1 to R4, r6 N1 to N6, r7 R1 to R7) rewritten for the new functions, plus the three from this note: raw key lookup without the `_id` and `__` normalizing, no locale clean-up (compare by text instead of field), and a dotted join name. Mutants that have no equivalent in the new design (for example "no version strip") are mapped to their replacement ("version fields omitted from the sets") and the mapping is listed in the CHANGELOG entry. Every mutant must fail at least one named test, and a mutant that passes the whole suite is a gap to close before the work is done.
+- **Mutants:** a script (`scripts/mutants.mjs` inside the package, not shipped) applies each mutant to `src` in a temporary copy, runs the suite and requires failures, then restores. The mutants are the reviewer's lists (r4 G1 to G15, r5 R1 to R4, r6 N1 to N6, r7 R1 to R7) rewritten for the new functions, plus the three from this note: raw key lookup without the `_id` and `__` normalizing, no locale clean-up (compare by text instead of field), and a dotted join name. Mutants that have no equivalent in the new design (for example "no version strip") are mapped to their replacement ("version fields omitted from the sets") and the mapping is listed in the CHANGELOG entry. Every mutant must fail at least one named test, and a mutant that passes the whole suite is a gap to close before the work is done.
 
 ### 5. How each round 8 finding is closed
 
@@ -138,9 +138,15 @@ New `test/hidden-parent-differential.test.ts` (shared body, one file per `hidden
 
 ## Open item: base-probe cases B, C, E, G, A.validate and R3.cycle
 
-The reviewer's seed lists these base-probe cases as `equal: false` in both modes, the same as in round 6, and asks whether each is intended. The probe's source is not in the seed (the nine attached files are the r3 to r7 oracle probes), so the cases cannot be read as written. The base probe covers the write side (create and update through Local and REST, bulk update, the `validate` endpoint and the cycle check), which is the area of the changelog entry "the parentage check and the birthing-event check no longer reveal hidden records". They are not part of the query guard and the resolver does not change them.
+The reviewer's seed lists these base-probe cases as `equal: false` in both modes, the same as in round 6, and asks whether each is intended. The probe source for them (cases A to R6) was not among the attached files, which are the r3 to r7 probes, so the cases could not be read as written and are not answered here. They cover the write side (create and update through Local and REST, bulk update, the `validate` endpoint and the cycle check), which is the area of the changelog entry "the parentage check and the birthing-event check no longer reveal hidden records". They are not part of the query guard and this change does not touch them. The existing write-side tests (`test/hidden-parent-oracle.test.ts`) still pass. Still needed: the base probe's source, so each case can be run as hidden against made-up and recorded as intended (the caller is told about something they can read) or as a leak with its own test.
 
-Plan: rebuild the matrix from the write-side tests that exist (`hidden-parent-oracle.test.ts`, `private-parents*.test.ts`), run each case as hidden `H` against made-up `N` as a caller who cannot read `H`, and record per case whether the two answers differ and why. The answer goes in this section after the build: intended (the answer differs because the caller is told about something they can read, such as their own cycle or a readable parent), or a leak that gets its own test and fix. Nothing in the build waits on it.
+## What the build found
+
+- **Locale segments are dropped by Payload.** `getLocalizedPaths` skips one segment too many after a locale code on a relationship (`nextSegmentIsLocale ? i + 2 : i + 1` after `i` was already advanced), so `lherd.en.dam` resolves to the `lherd` field alone. K8 (`where[lherd.en.dam][exists]=true` on weighings) therefore filters on `lherd` and names no parent: it answers 200 in both modes, and exactly like `where[lherd.en][exists]=true`. On 88ff1c1 it also answered 200. It is not a leak, and the differential test pins it (`K8`), as the shape test pins the resolver behavior. K3 (`lgrp.en.herd.dam`) is different: the locale sits after the group, the segment after `herd` is kept, and the key resolves to the parent field. L9 (`exists` under a nested `contains`) is refused in omit mode now.
+- **`disableOnInit`.** Payload's own CLI scripts start without `onInit`, and the old and the first new install both relied on it for collections and globals that a later plugin adds. The plugin now also wraps the database adapter's `init`, which runs in every start before `onInit`, and installs the guard there. `onInit` still runs the same pass for anything added after that. Covered by `test/guard-noinit.test.ts` (a plugin-added collection and global version reads), which failed on the old code.
+- **Globals added by a later plugin and globals reached through other collections** are covered by the `lateGlobal` and `chain` globals in the fixture.
+- **Hidden fields.** `getLocalizedPaths` marks a `hidden: true` field invalid for an untrusted caller. The guard treats that as unresolved and refuses with its own message instead of leaving the refusal to Payload.
+- **Segment limit.** A key of more than 100 segments is refused before resolving. The hop limit (more than 8 hops) refuses the same keys earlier in practice, so no test separates the two and this mutant is listed as redundant.
 
 ## Peer, version and other review points, in one place
 
@@ -151,11 +157,11 @@ Plan: rebuild the matrix from the write-side tests that exist (`hidden-parent-or
 | 3. Global version reads | `beforeOperation` is not called by global `findVersions` and `findVersionByID`; the guard wraps `access.readVersions`, which every global version read runs for untrusted callers; fails closed for callers who cannot read every individual |
 | 4. Meta-test | Checks behavior (G1, G3, G4, L and J probes over REST, Local and GraphQL), not that a hook is present |
 | 5. Seed | Every case becomes a row in both modes; confirmed leaks are named rows that fail on 88ff1c1 and 2816d47; the mutant lists are rerun |
-| 6. Open item | Base-probe cases: rebuilt from write-side tests, answer recorded after the build |
+| 6. Open item | Base-probe cases: the probe source is missing from the seed; not answered, asked for again (see the open item) |
 
 ## Plan
 
 1. Add the shape test, the behavioral meta-test and the differential test with the seed first, and watch the confirmed leaks fail on 2816d47.
 2. Add `parentPaths.ts`, `installGuard` and the readVersions wrap; delete `dotted`, `classify`, `walkPath` and `relationMap`.
 3. Rerun the mutants and the full suite twice, typecheck, build and the leak check.
-4. Rewrite the README, CHANGELOG and Design notes lines to match what is tested, and record the base-probe answer here.
+4. Rewrite the README, CHANGELOG and Design notes lines to match what is tested. Done, except the base-probe answer.
