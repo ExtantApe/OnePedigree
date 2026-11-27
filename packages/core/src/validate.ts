@@ -256,7 +256,7 @@ export function validateParentageChange(
         if (seen.has(c)) continue
         seen.add(c)
         if (proposed.has(c))
-          issues.push(issue('error', 'PARENT_IS_DESCENDANT', 'The proposed parent already descends from this individual.', { individualId: childId, relatedIds: [c] }))
+          issues.push(issue('error', 'PARENT_IS_DESCENDANT', 'This animal can’t be a parent here, because it already descends from this animal in the family line. Some of that line may belong to records you can’t see.', { individualId: childId, relatedIds: [c] }))
         next.push(c)
       }
     if (seen.size > limit) {
