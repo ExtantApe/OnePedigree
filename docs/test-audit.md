@@ -7,7 +7,8 @@ Each audit lists what this repo promises, the tests that prove it, and the gaps:
 - Promises: with access control on, a requester who can't read a parent gets the same answer for its ID and for a made-up ID on every filter, sort, distinct, join and version read; a requester who can read it still gets real answers; the guard covers collections, globals, plugin-added entities and internal collections.
 - Covered: `hidden-parent-differential-{omit,placeholder}` (169 rows from the review probes r3 to r7, the `below` rows, exists rows, sort and distinct, readable-parent answers), `differential-standard-*` (standard-fields install, `__` spellings), `resolver-shape` (Payload's resolver shape), `guard-installed` (every entity kind by behavior), `guard-noinit`, `guard-limits`, and `scripts/mutants.mjs` (35 mutants, all killed).
 - Gaps added: sort and distinct had no rows, so deleting the sort check survived; `below` paths with a readable ID; a plain `-name` sort; an unknown join name; a hidden field; a global reached through another collection and one a later plugin adds.
-- Gaps skipped (and why): the 100-segment limit (the hop limit refuses the same keys first); `onInit` as a second install point (the database start already installs and nothing separates the two); the base-probe write-side cases (probe source unavailable); a real Next.js route handler and a database other than MongoDB (no harness here).
+- Base-probe cases: B, C, E, G and A.validate are intended (relabeled outputs are equal); R3.cycle is a deliberate trade-off, pinned by `loop-message-*`. Older entries that quote the previous loop message are historical.
+- Gaps skipped (and why): the 100-segment limit (the hop limit refuses the same keys first); `onInit` as a second install point (the database start already installs and nothing separates the two); a real Next.js route handler and a database other than MongoDB (no harness here).
 
 ## 2026-11-22: CORE_VERSION and the new app identifier
 

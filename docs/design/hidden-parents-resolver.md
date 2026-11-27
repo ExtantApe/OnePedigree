@@ -136,9 +136,20 @@ New `test/hidden-parent-differential.test.ts` (shared body, one file per `hidden
 - **Still not covered.** A parent id kept in a non-relationship field (a text field holding an id); the plain-text `relationTo` form of a polymorphic relationship beyond `.value`; a real Next.js route handler; a database other than MongoDB; custom endpoints in a host that build their own queries without going through Payload's operations; any host access function that reveals the hidden record by other means; collections added to `payload.config` after `onInit`.
 - **Parked.** The separate field with field-level read access (point 4 of the reviewer's plan) is not part of this work; it is an owner decision, only if sections 1 to 4 do not converge.
 
-## Open item: base-probe cases B, C, E, G, A.validate and R3.cycle
+## Base-probe cases B, C, E, G, A.validate and R3.cycle (answered)
 
-The reviewer's seed lists these base-probe cases as `equal: false` in both modes, the same as in round 6, and asks whether each is intended. The probe source for them (cases A to R6) was not among the attached files, which are the r3 to r7 probes, so the cases could not be read as written and are not answered here. They cover the write side (create and update through Local and REST, bulk update, the `validate` endpoint and the cycle check), which is the area of the changelog entry "the parentage check and the birthing-event check no longer reveal hidden records". They are not part of the query guard and this change does not touch them. The existing write-side tests (`test/hidden-parent-oracle.test.ts`) still pass. Still needed: the base probe's source, so each case can be run as hidden against made-up and recorded as intended (the caller is told about something they can read) or as a leak with its own test.
+The base probe (cases A to R6) was rerun at 9a72b5e in both modes. The same six cases show `equal: false` as at 2816d47. Each was compared after relabeling the ids and names the caller supplied.
+
+| Case | Verdict | Reason |
+| --- | --- | --- |
+| B (readable mother, cohort with a hidden mother vs none) | intended | The outputs match once the clutch id the caller sent is relabeled; same status and shape, no hidden parent shown. |
+| C (hidden cohort vs made-up cohort) | intended | Only the caller's own clutch id differs. A hidden cohort is accepted like a made-up one. |
+| E (cohort write, hidden conflicting member vs none) | intended | Only the probe's own record names differ; both answer 200 with the same body. |
+| G (visible member with a hidden dam vs no dam) | intended | Same: only the probe's record names differ. |
+| A.validate (guessing a hidden parent on the validate endpoint) | intended | All three answers are `UNRESOLVED_PARENT`; `relatedIds` only echoes the id the caller sent. |
+| R3.cycle (parent whose line runs through a hidden record) | deliberate trade-off | The refusal stays. See below. |
+
+**R3.cycle.** Proposing a readable animal as a parent is refused with `PARENT_IS_DESCENDANT` when it already descends from the child, even when the line runs through a record the editor can't read. The caller learns that a hidden record links two records they can read. No hidden id, name or count is shown. Ignoring hidden links would let a real loop be saved, so the refusal stays. The message is the same whether or not the line runs through a hidden record, and says so gently: "This animal can't be a parent here, because it already descends from this animal in the family line. Some of that line may belong to records you can't see." The error code is unchanged. This differs from the birthing-parent checks, where the answer was made independent of hidden records and the cost is documented: there, ignoring a hidden record cannot corrupt the pedigree.
 
 ## What the build found
 
@@ -157,11 +168,11 @@ The reviewer's seed lists these base-probe cases as `equal: false` in both modes
 | 3. Global version reads | `beforeOperation` is not called by global `findVersions` and `findVersionByID`; the guard wraps `access.readVersions`, which every global version read runs for untrusted callers; fails closed for callers who cannot read every individual |
 | 4. Meta-test | Checks behavior (G1, G3, G4, L and J probes over REST, Local and GraphQL), not that a hook is present |
 | 5. Seed | Every case becomes a row in both modes; confirmed leaks are named rows that fail on 88ff1c1 and 2816d47; the mutant lists are rerun |
-| 6. Open item | Base-probe cases: the probe source is missing from the seed; not answered, asked for again (see the open item) |
+| 6. Open item | Base-probe cases: answered after the probe source arrived (five intended, R3.cycle a deliberate trade-off) |
 
 ## Plan
 
 1. Add the shape test, the behavioral meta-test and the differential test with the seed first, and watch the confirmed leaks fail on 2816d47.
 2. Add `parentPaths.ts`, `installGuard` and the readVersions wrap; delete `dotted`, `classify`, `walkPath` and `relationMap`.
 3. Rerun the mutants and the full suite twice, typecheck, build and the leak check.
-4. Rewrite the README, CHANGELOG and Design notes lines to match what is tested. Done, except the base-probe answer.
+4. Rewrite the README, CHANGELOG and Design notes lines to match what is tested. Done, including the base-probe answer.

@@ -30,6 +30,9 @@ export const SKIP = 'onepedigreeInternal'
 export const TRUSTED = 'onepedigreeOverrideAccess'
 const MAX_DESCENDANTS = 100_000
 
+/** The same words whether or not the line runs through records the editor can't read. */
+export const LOOP_MESSAGE = 'This animal can’t be a parent here, because it already descends from this animal in the family line. Some of that line may belong to records you can’t see.'
+
 const err = (code: string, message: string, path?: string, relatedIds?: string[]): PedigreeIssue => ({
   severity: 'error',
   code,
@@ -101,7 +104,7 @@ export async function checkParentage(
         const c = String(d.id)
         if (reached.has(c)) continue
         reached.add(c)
-        if (proposed.has(c)) issues.push(err('PARENT_IS_DESCENDANT', 'This parent already descends from the individual; the pedigree would loop.', path, [c]))
+        if (proposed.has(c)) issues.push(err('PARENT_IS_DESCENDANT', LOOP_MESSAGE, path, [c]))
         frontier.push(c)
       }
       if (reached.size > MAX_DESCENDANTS) {

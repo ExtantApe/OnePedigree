@@ -99,7 +99,10 @@ Saving a cohort with a birthing parent the editor can't read is refused.
 On every write (Admin, REST, GraphQL, Local API, imports):
 
 - self-parents, duplicated parents and **cycles** are rejected with field-addressable errors;
-  the cycle check walks the full stored descendant line;
+  the cycle check walks the full stored descendant line, including records the editor can't read. If
+  the line runs through one, the refusal says so in the same words as any other loop ("Some of that line
+  may belong to records you can't see") and shows no id, name or count. This is a deliberate trade-off:
+  skipping hidden records would let a real loop be saved;
 - a parent the editor **cannot read** is rejected, with the same message as a missing one;
 - host `rules` (e.g. taxonomy) run on the proposed record;
 - parentage changes are **serialized**: each updates a graph-revision global in the same
